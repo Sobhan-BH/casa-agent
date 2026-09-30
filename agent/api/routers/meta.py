@@ -31,9 +31,15 @@ async def status() -> dict:
         "features": {
             "ai_provider": settings.llm_provider,
             "ai_analysis_enabled": settings.ai_analysis_enabled,
+            "api_key_protected": bool(settings.api_key),
+            "rate_limit_rpm": settings.rate_limit_rpm,
+            "webhook_configured": bool(settings.webhook_url),
+            "reassess_interval_hours": settings.reassess_interval_hours,
+            "osv_enrichment": settings.osv_enabled,
+            "dashboard": "/dashboard",
+            "sarif_export": "/api/v1/assessments/{id}/sarif",
             "extension_points_disabled": [
                 "network_assessment",
-                "continuous_monitoring",
                 "attack_path_analysis",
             ],
         },

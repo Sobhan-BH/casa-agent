@@ -205,6 +205,15 @@ async def get_assessment(session: AsyncSession, assessment_id: str) -> Assessmen
     return assessment
 
 
+async def list_assessments(
+    session: AsyncSession, limit: int = 10
+) -> Sequence[Assessment]:
+    res = await session.execute(
+        select(Assessment).order_by(Assessment.started_at.desc()).limit(limit)
+    )
+    return res.scalars().all()
+
+
 async def get_latest_assessment_for_target(
     session: AsyncSession, target_id: str
 ) -> Assessment | None:

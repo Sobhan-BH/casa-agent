@@ -49,7 +49,9 @@ from agent.modules.recon import ReconModule
 from agent.modules.tech_detection import TechDetectionModule
 from agent.modules.tls_analysis import TlsAnalysisModule
 from agent.modules.tool_runner import ToolRunnerModule
+from agent.modules.osv_enrichment import OsvEnrichmentModule
 from agent.modules.vuln_correlation import VulnCorrelationModule
+from agent.modules.waf_detect import WafDetectModule
 from agent.modules.web_checks import WebChecksModule
 from agent.risk.engine import RiskEngine
 from agent.storage import repositories as repo
@@ -74,6 +76,8 @@ MODULE_REGISTRY: dict[str, tuple] = {
     "active_safe": lambda v, s: ActiveSafeModule(v),
     "dns_security": lambda v, s: DnsSecurityModule(v),
     "vuln_correlation": lambda v, s: VulnCorrelationModule(v),
+    "waf_detect": lambda v, s: WafDetectModule(v),
+    "osv_enrichment": lambda v, s: OsvEnrichmentModule(v),
     "tool_runner": lambda v, s: ToolRunnerModule(v),
 }
 _TAIL_FACTORIES: list = [
@@ -89,6 +93,7 @@ PROFILES: dict[str, list[str]] = {
         "tech_detection",
         "headers",
         "tls_analysis",
+        "waf_detect",
         "tool_runner",   # QUICK tool map: WhatWeb only (registry filters)
     ],
     AssessmentMode.STANDARD.value: [
@@ -104,7 +109,9 @@ PROFILES: dict[str, list[str]] = {
         "info_disclosure",
         "web_checks",
         "dns_security",
+        "waf_detect",
         "vuln_correlation",
+        "osv_enrichment",  # CVE advisories via OSV.dev (degrades offline)
         "tool_runner",   # STANDARD tool map: whatweb/nikto/nuclei (+nmap in DEEP)
     ],
     AssessmentMode.DEEP.value: [
@@ -122,7 +129,9 @@ PROFILES: dict[str, list[str]] = {
         "web_checks",
         "active_safe",
         "dns_security",
+        "waf_detect",
         "vuln_correlation",
+        "osv_enrichment",
         "tool_runner",   # DEEP tool map: + nmap + gobuster + ffuf (surface enrichment)
     ],
 }
@@ -247,8 +256,29 @@ class Orchestrator:
             from agent.analysis.attack_surface import build_attack_surface
             from agent.reports.generator import ReportGenerator
 
+            # Post-normalization enrichment: MITRE ATT&CK annotations.
+            from agent.analysis.attack_mapping import AttackMappingModule
+
+            attack_mapper = AttackMappingModule(validator)
+            await attack_mapper.run(ctx)
+
             generator = ReportGenerator(self._session)
             await generator.generate(ctx)
+
+            # SARIF 2.1.0 artifact (GitHub Code Scanning compatible)
+            from agent.reports.sarif import sarif_json
+
+            await repo.save_artifact(
+                self._session,
+                str(ctx.assessment_id),
+                fmt="sarif",
+                path="",
+                content=sarif_json(
+                    ctx.target_url,
+                    ctx.findings,
+                    (ctx.risk_summary or {}).get("security_score"),
+                ),
+            )
 
             await repo.finish_assessment(
                 self._session,
@@ -276,6 +306,29 @@ class Orchestrator:
                     "assessment_id": str(ctx.assessment_id),
                     "findings": len(ctx.findings),
                 },
+            )
+
+            # Webhook notification (never raises; delivery is best-effort)
+            from agent.analysis.notify import send_webhook
+
+            dist = (ctx.risk_summary or {}).get("distribution", {})
+            webhook_payload = {
+                "job_id": str(job.id),
+                "assessment_id": str(ctx.assessment_id),
+                "target": target.url,
+                "status": JobStatus.COMPLETED.value,
+                "security_score": (ctx.risk_summary or {}).get("security_score"),
+                "findings": len(ctx.findings),
+                "severity_distribution": dist,
+            }
+            receipt = await send_webhook("JOB_COMPLETED", webhook_payload)
+            await repo.record_audit(
+                self._session,
+                "WEBHOOK_ATTEMPTED",
+                job_id=job.id,
+                target=target.url,
+                outcome="OK" if receipt.get("sent") else "SKIPPED",
+                details={"receipt": receipt},
             )
         except ScopeViolationError as exc:
             overall_status = JobStatus.BLOCKED.value

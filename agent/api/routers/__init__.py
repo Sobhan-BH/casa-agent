@@ -7,6 +7,7 @@ from agent.api.routers import (
     assessments,
     audit,
     authorizations,
+    dashboard,
     jobs,
     meta,
     tools,
@@ -21,4 +22,5 @@ def all_routers() -> list[APIRouter]:
         assessments.router,
         audit.router,
         tools.router,
+        dashboard.router,
     ]

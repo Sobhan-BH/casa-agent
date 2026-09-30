@@ -139,7 +139,27 @@ class RiskEngine:
             "auth_factor": auth_factor,
             "reachability_factor": reachability_factor,
         }
-        return {"risk_score": round(raw, 1), "risk_factors": factors}
+
+        # CVSS v3.1 companion score (industry standard). Uses vendor vector
+        # metadata when present, else a synthetic vector from CASA severity.
+        cvss_data: dict[str, Any] | None = None
+        try:
+            from agent.core.cvss import CVSS31, severity_to_synthetic_vector
+
+            vector = meta.get("cvss_vector")
+            if isinstance(vector, str) and vector.startswith("CVSS:3"):
+                parsed = CVSS31.parse(vector)
+            else:
+                parsed = CVSS31.parse(severity_to_synthetic_vector(severity))
+            cvss_data = parsed.to_dict()
+        except Exception:  # noqa: BLE001 — CVSS must never break scoring
+            cvss_data = None
+
+        return {
+            "risk_score": round(raw, 1),
+            "risk_factors": factors,
+            "cvss": cvss_data,
+        }
 
     def compute(self, findings: list[dict[str, Any]]) -> dict[str, Any]:
         distribution = {s.value: 0 for s in Severity}
@@ -150,6 +170,8 @@ class RiskEngine:
             result = self.score_finding(f)
             f["risk_score"] = result["risk_score"]
             f["risk_factors"] = result["risk_factors"]
+            if result.get("cvss"):
+                f["cvss"] = result["cvss"]
             total_risk += result["risk_score"]
             if f.get("metadata", {}).get("false_positive_risk") == "HIGH":
                 # FP-suspected findings count at 25% weight until verified.
@@ -174,6 +196,13 @@ class RiskEngine:
             )[:5]
         ]
 
+        cvss_scores = [
+            f.get("cvss", {}).get("score")
+            for f in scored
+            if f.get("cvss")
+        ]
+        avg_cvss = round(sum(cvss_scores) / len(cvss_scores), 1) if cvss_scores else None
+
         return {
             "security_score": security_score,
             "grade": self._grade(security_score),
@@ -181,6 +210,7 @@ class RiskEngine:
             "category_scores": self._category_scores(scored),
             "total_raw_risk": round(total_risk, 1),
             "divisor": DIVISOR,
+            "avg_cvss_base_score": avg_cvss,
             "method": (
                 "sum(finding_risk)/divisor subtracted from 100; finding_risk = "
                 "severity * confidence * exposure * exploitability * importance "

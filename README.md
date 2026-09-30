@@ -1,13 +1,28 @@
 # CASA — Core Agentic Security Assessment
 
-An **authorized-scope-only** AI cybersecurity assessment agent (MVP).
+An **authorized-scope-only** AI cybersecurity assessment agent.
 
 CASA performs low-impact web security assessments against targets **only** when a
 registered authorization covers them, produces evidence-backed findings, a
-deterministic security score, an AI-generated analysis (via a swappable LLM
-provider), and a client-ready JSON + HTML report. A local, deliberately
-vulnerable lab app is included so the entire flow runs with **no internet access
-and no third-party targets**.
+deterministic security score **plus industry-standard CVSS v3.1 scores**, an
+AI-generated analysis (via a swappable LLM provider), and client-ready
+JSON + HTML + **SARIF 2.1.0** reports. A local, deliberately vulnerable lab app
+is included so the entire flow runs with **no internet access and no third-party
+targets**.
+
+## What's new in v0.2.0
+
+| Feature | Description |
+|---|---|
+| **CVSS v3.1 engine** | Full FIRST.org spec implementation — every finding carries an industry-standard base score (vendor vector respected when present) |
+| **WAF/CDN detection** | wafw00f-inspired passive fingerprinting of edge protection from headers/cookies/block pages |
+| **CVE enrichment (OSV.dev)** | Known advisories matched against detected technologies via the free OSV.dev API (osv-scanner-inspired; degrades gracefully offline) |
+| **MITRE ATT&CK mapping** | Every finding annotated with relevant Enterprise techniques + tactics |
+| **SARIF 2.1.0 export** | GitHub Code Scanning-compatible output: `GET /api/v1/assessments/{id}/sarif` |
+| **API-key auth + rate limiting** | Optional hardening: `CASA_API_KEY`, `CASA_RATE_LIMIT_RPM` (constant-time key check, 429 + Retry-After) |
+| **Web dashboard** | Read-only operational view at `/dashboard` (no JS frameworks, no CDN) |
+| **Webhook notifications** | Slack/Discord/generic payloads on completion: `CASA_WEBHOOK_URL` |
+| **Continuous monitoring** | Built-in scheduler re-assesses stale targets: `CASA_REASSESS_INTERVAL_HOURS` |
 
 > ⚠️ **This is a defensive assessment tool.** It only issues GET/HEAD requests,
 > refuses targets without authorization, and contains no exploit, auth-bypass,
@@ -84,6 +99,9 @@ and no third-party targets**.
 | 24 | **Active Safe Tests** | DEEP-only: OPTIONS/HEAD/GET comparisons, harmless reflection markers, error-shape analysis |
 | 25 | **DNS Security** | SPF/DMARC/CAA/DNSSEC/DKIM indicators (passive lookups only, IP targets skipped) |
 | 26 | Attack Surface Map | structured JSON surface: domains, endpoints, techs, APIs, controls, findings |
+| 27 | **WAF Detect** | passive WAF/CDN/proxy fingerprinting (headers, cookies, block-page markers) |
+| 28 | **OSV Enrichment** | CVE advisory matching against detected techs via OSV.dev (UNVERIFIED by design) |
+| 29 | **ATT&CK Mapping** | MITRE ATT&CK technique/tactic annotations on every mappable finding |
 
 ### Assessment profiles (Phase 14)
 
@@ -413,15 +431,30 @@ safety).
 
 | Area | Hook |
 |------|------|
-| Network assessment | add a module + adapter; register in `MODULE_FACTORIES` |
-| Continuous monitoring | scheduled `REASSESSMENT` jobs via a Redis/Celery backend |
+| Network assessment | add a module + adapter; register in `MODULE_REGISTRY` |
+| ~~Continuous monitoring~~ **done in v0.2.0** | `ReassessmentScheduler` (built-in; Redis/Celery optional upgrade) |
 | Attack-path analysis | graph module consuming normalized findings |
-| CVE/NVD feeds | replace `agent/knowledge/kb.json` loader |
+| ~~CVE/NVD feeds~~ **done in v0.2.0** | OSV.dev enrichment module (local KB still first) |
 | Celery/Redis queue | implement `JobQueue` against a broker |
 | Signed authorizations | `CASA_REQUIRE_SIGNED_AUTHORIZATIONS` flag prepared |
+| Redis-backed rate limiting | swap the in-memory limiter in `agent/api/security.py` |
 
-## 12. Roadmap beyond MVP
+## 12. Tests & Validation (v0.2.0)
 
-Network/infrastructure modules, authenticated scanning (cookie-based, owner
-provided), CI/CD integration, multi-tenant RBAC, PDF export, finding
-lifecycle workflows, and a Next.js dashboard on the existing REST API.
+```bash
+pytest -v                    # 119 tests (94 original + 25 for v0.2.0 features)
+python scripts/validate.py   # 50 executable end-to-end validation checks
+```
+
+v0.2.0 test coverage includes: official CVSS vectors verified against the FIRST
+spec, synthetic-vector band containment, WAF signature matching (and
+non-matching), ATT&CK rule mapping, SARIF structure + MITRE tags, API-key
+middleware (401/429/open-path), rate-limiter window math, webhook payload
+formats, dashboard rendering, SARIF endpoint, and OSV version-range parsing.
+
+## 13. Roadmap beyond v0.2.0
+
+Network/infrastructure modules, authenticated scanning (cookie-based,
+owner-provided), CI/CD integration (GitHub Actions + code-scanning upload of
+the SARIF artifact), multi-tenant RBAC, PDF export, finding lifecycle
+workflows, and a Next.js dashboard on the existing REST API.

@@ -50,9 +50,17 @@ async def lifespan(app: FastAPI):
         queue.enqueue(job_id)
     if pending_ids:
         logger.info("re-enqueued %d queued job(s) after restart", len(pending_ids))
+
+    # Continuous-monitoring scheduler (disabled when interval <= 0)
+    from agent.workers.scheduler import ReassessmentScheduler
+
+    scheduler = ReassessmentScheduler(AsyncSessionLocal)
+    scheduler.start()
+
     set_app_state(queue)
     logger.info("CASA API started (env=%s, db=%s)", settings.env, settings.database_url.split("@")[-1])
     yield
+    await scheduler.stop()
     await queue.stop()
     await engine.dispose()
 
@@ -92,6 +100,12 @@ async def casa_error_handler(request: Request, exc: CasaError) -> JSONResponse:
 
 for router in all_routers():
     app.include_router(router)
+
+
+# Optional API-key auth + rate limiting (no-ops unless CASA_API_KEY / CASA_RATE_LIMIT_RPM set)
+from agent.api.security import install_api_security
+
+install_api_security(app)
 
 
 @app.get("/health", response_class=PlainTextResponse, tags=["meta"])

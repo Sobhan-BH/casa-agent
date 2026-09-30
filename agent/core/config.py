@@ -47,6 +47,10 @@ class Settings(BaseSettings):
 
     lab_base_url: str = "http://127.0.0.1:8001"
 
+    # OSV.dev CVE enrichment
+    osv_enabled: bool = True
+    osv_max_technologies: int = 12
+
     # External security tools (Tool Integration layer)
     tools_enabled: bool = True
     tools_allowed: str = ""  # comma-separated allowlist; empty = all known tools
@@ -66,6 +70,18 @@ class Settings(BaseSettings):
     # Pipeline toggles (kept on Settings so env can override; FeatureFlags
     # in agent.core.features documents the full flag surface incl. extension points)
     ai_analysis_enabled: bool = True
+
+    # API security
+    api_key: str = ""                  # empty = auth disabled (lab posture)
+    rate_limit_rpm: int = 0            # 0 = rate limiting disabled
+
+    # Webhook notifications (Slack/Discord/generic)
+    webhook_url: str = ""
+    webhook_format: str = "generic"    # generic | slack | discord
+    webhook_events: str = "JOB_COMPLETED,JOB_FAILED,JOB_BLOCKED"
+
+    # Continuous monitoring (0 disables the scheduler)
+    reassess_interval_hours: float = 0.0
 
     @property
     def is_sqlite(self) -> bool:

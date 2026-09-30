@@ -127,6 +127,39 @@ async def list_reports(
     ]
 
 
+@router.get("/{assessment_id}/sarif")
+async def get_sarif(
+    assessment_id: str, session: AsyncSession = Depends(get_session)
+):
+    """SARIF 2.1.0 export (GitHub Code Scanning compatible)."""
+    try:
+        a = await repo.get_assessment(session, assessment_id)
+    except CasaError as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    rows = await repo.list_findings(session, assessment_id)
+    from agent.reports.sarif import build_sarif_report
+
+    findings = [
+        {
+            "title": r.title,
+            "category": r.category,
+            "severity": r.severity,
+            "confidence": r.confidence,
+            "description": r.description,
+            "affected_asset": r.affected_asset,
+            "remediation": r.remediation,
+            "source": r.source,
+            "status": r.status,
+            "risk_score": r.risk_score,
+            "fingerprint": r.fingerprint,
+            "metadata": r.metadata_json or {},
+        }
+        for r in rows
+    ]
+    report = build_sarif_report(a.target_url, findings, a.security_score)
+    return JSONResponse(content=report)
+
+
 @router.get("/{assessment_id}/reports/{artifact_id}")
 async def download_report(
     assessment_id: str, artifact_id: str, session: AsyncSession = Depends(get_session)

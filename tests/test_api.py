@@ -54,7 +54,7 @@ async def test_authorize_and_run_via_api(db_session, client, wired_http):
 
     r = await client.get(f"/api/v1/assessments/{assessment['id']}/reports")
     reports = r.json()
-    assert {a["fmt"] for a in reports} == {"json", "html"}
+    assert {"json", "html", "sarif"} <= {a["fmt"] for a in reports}
 
     r = await client.get(f"/api/v1/assessments/{assessment['id']}/evidence")
     assert r.status_code == 200
