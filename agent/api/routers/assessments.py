@@ -83,6 +83,7 @@ async def list_findings(
             ai_notes=r.ai_notes,
             evidence_refs=r.evidence_refs,
             fingerprint=r.fingerprint,
+            metadata=r.metadata_json,
         )
         for r in rows
     ]

@@ -298,8 +298,9 @@ class TestDashboard:
     async def test_dashboard_renders(self, client):
         r = await client.get("/dashboard")
         assert r.status_code == 200
-        assert "CASA Dashboard" in r.text
-        assert "Latest assessments" in r.text
+        assert "CASA Security Console" in r.text
+        assert "Run Assessment" in r.text  # target form present
+        assert "Recent Assessments" in r.text
 
     @pytest.mark.asyncio
     async def test_sarif_endpoint(self, db_session, client):

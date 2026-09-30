@@ -1,148 +1,399 @@
-"""Internal read-only dashboard at /dashboard.
+"""CASA Web Console — /dashboard.
 
-A single self-contained HTML page (no external CDN, no JS framework) that
-summarizes assessments, findings by severity and job history. It reads from
-the repositories directly, so it works on both SQLite and Postgres backends.
+A modern, self-contained single-page console (no external CDN, no framework)
+for running and reviewing assessments against authorized targets:
+
+- Target form: enter an IP/domain/URL, authorization context, profile; the
+  console registers the authorization and starts the job via the REST API.
+- Live progress: polls job status (QUEUED → RUNNING → ANALYZING → VERIFYING
+  → COMPLETED) with an animated stepper.
+- Findings explorer: severity cards, filters, expandable finding cards with
+  the full explanation layer (what / attack scenario / business impact /
+  exploitability / remediation plan / verification / CVSS rationale).
+- History: recent assessments and jobs.
+
+All markup is generated client-side from API JSON; escaping is applied to
+every interpolated value.
 """
 from __future__ import annotations
 
-import html
-from datetime import datetime, timezone
+import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent import __version__
-from agent.storage import repositories as repo
-from agent.storage.database import get_session
 
 router = APIRouter(tags=["dashboard"])
 
 _CSS = """
-:root { color-scheme: dark; }
-body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background:#0d1117; color:#c9d1d9; margin:0; }
-.wrap { max-width: 1100px; margin:0 auto; padding:24px; }
-h1 { margin:0 0 4px; color:#58a6ff; }
-.muted { color:#8b949e; font-size:13px; }
-.cards { display:flex; gap:16px; flex-wrap:wrap; margin:24px 0; }
-.card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:16px 22px; min-width:140px; }
-.card .num { font-size:34px; font-weight:700; }
-.CRITICAL { color:#f85149; } .HIGH { color:#f0883e; } .MEDIUM { color:#d29922; } .LOW { color:#7ee787; } .INFO { color:#8b949e; }
-table { width:100%; border-collapse:collapse; margin-top:16px; font-size:14px; }
-th { text-align:left; color:#58a6ff; border-bottom:2px solid #30363d; padding:8px 6px; }
-td { border-bottom:1px solid #21262d; padding:8px 6px; vertical-align:top; }
-.badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:12px; font-weight:600; }
-.badge.COMPLETED { background:#1a7f37; } .badge.FAILED, .badge.BLOCKED { background:#b62324; }
-.badge.RUNNING, .badge.QUEUED { background:#1f6feb; }
-a { color:#58a6ff; text-decoration:none; }
+:root {
+  --bg0:#07090f; --bg1:#0d1117; --bg2:#161b22; --bg3:#1c2129; --line:#30363d;
+  --txt:#e6edf3; --mut:#8b949e; --acc:#58a6ff; --acc2:#79c0ff;
+  --ok:#3fb950; --warn:#d29922; --hi:#f0883e; --crit:#f85149; --info:#8b949e; --low:#7ee787;
+  --grad:linear-gradient(135deg,#0d1117 0%,#12192a 60%,#0d1117 100%);
+}
+* { box-sizing:border-box; }
+body { font-family:-apple-system,'Segoe UI',Roboto,'Vazirmatn',sans-serif; background:var(--bg0); color:var(--txt); margin:0; }
+a { color:var(--acc); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.wrap { max-width:1200px; margin:0 auto; padding:28px 24px 60px; }
+header.hero { background:var(--grad); border-bottom:1px solid var(--line); padding:22px 24px; }
+.hero .inner { max-width:1200px; margin:0 auto; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+.logo { width:40px; height:40px; border-radius:10px; background:linear-gradient(135deg,#1f6feb,#a371f7); display:flex; align-items:center; justify-content:center; font-size:20px; }
+h1 { font-size:20px; margin:0; }
+.sub { color:var(--mut); font-size:13px; }
+.badge-v { border:1px solid var(--line); color:var(--acc2); border-radius:20px; padding:2px 10px; font-size:12px; }
+.grid { display:grid; grid-template-columns:340px 1fr; gap:20px; align-items:start; }
+@media (max-width: 950px){ .grid { grid-template-columns:1fr; } }
+.card { background:var(--bg2); border:1px solid var(--line); border-radius:12px; padding:18px; }
+.card h2 { margin:0 0 12px; font-size:15px; color:var(--acc2); letter-spacing:.3px; }
+label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
+input,select { width:100%; background:var(--bg1); color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:14px; outline:none; }
+input:focus,select:focus { border-color:var(--acc); box-shadow:0 0 0 3px rgba(88,166,255,.15); }
+.hint { font-size:11px; color:var(--mut); margin-top:4px; }
+button.primary { width:100%; margin-top:14px; background:linear-gradient(135deg,#1f6feb,#388bfd); color:#fff; border:none; border-radius:8px; padding:11px; font-size:15px; font-weight:600; cursor:pointer; transition:.15s; }
+button.primary:hover { filter:brightness(1.1); }
+button.primary:disabled { opacity:.5; cursor:not-allowed; }
+.kpi-row { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:16px; }
+.kpi { flex:1; min-width:130px; background:var(--bg2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.kpi .num { font-size:30px; font-weight:700; }
+.kpi .lbl { color:var(--mut); font-size:12px; }
+.CRITICAL{color:var(--crit);} .HIGH{color:var(--hi);} .MEDIUM{color:var(--warn);} .LOW{color:var(--low);} .INFO{color:var(--info);}
+.score-ring { display:flex; align-items:center; gap:16px; }
+.ring { --p:0; width:110px; height:110px; border-radius:50%; background:conic-gradient(var(--sc,#3fb950) calc(var(--p)*1%), var(--bg3) 0); display:flex; align-items:center; justify-content:center; position:relative; }
+.ring::before { content:''; position:absolute; width:86px; height:86px; border-radius:50%; background:var(--bg2); }
+.ring .val { position:relative; font-size:26px; font-weight:700; }
+.steps { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0; }
+.step { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--mut); background:var(--bg1); border:1px solid var(--line); border-radius:20px; padding:4px 12px; }
+.step.on { color:#fff; border-color:var(--acc); background:rgba(88,166,255,.12); }
+.step .dot { width:8px; height:8px; border-radius:50%; background:var(--line); }
+.step.on .dot { background:var(--acc); animation:pulse 1.2s infinite; }
+.step.done .dot { background:var(--ok); animation:none; }
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+.finding { border:1px solid var(--line); border-radius:12px; margin-bottom:12px; background:var(--bg2); overflow:hidden; }
+.finding .head { display:flex; gap:10px; align-items:flex-start; padding:14px 16px; cursor:pointer; }
+.finding .head:hover { background:var(--bg3); }
+.finding .title { font-weight:600; flex:1; }
+.finding .meta { color:var(--mut); font-size:12px; margin-top:3px; }
+.sev { border-radius:6px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:.5px; }
+.sev.CRITICAL{background:rgba(248,81,73,.15); border:1px solid var(--crit); color:var(--crit);}
+.sev.HIGH{background:rgba(240,136,62,.15); border:1px solid var(--hi); color:var(--hi);}
+.sev.MEDIUM{background:rgba(210,153,34,.15); border:1px solid var(--warn); color:var(--warn);}
+.sev.LOW{background:rgba(126,231,135,.15); border:1px solid var(--low); color:var(--low);}
+.sev.INFO{background:rgba(139,148,158,.15); border:1px solid var(--info); color:var(--info);}
+.finding .body { display:none; border-top:1px solid var(--line); padding:16px; }
+.finding.open .body { display:block; }
+.sect { margin-bottom:14px; }
+.sect h4 { margin:0 0 6px; font-size:13px; color:var(--acc2); display:flex; align-items:center; gap:6px; }
+.sect p, .sect li { font-size:13.5px; line-height:1.65; color:#c9d1d9; }
+.sect ol, .sect ul { margin:4px 0 0; padding-left:22px; }
+ol li { margin-bottom:6px; }
+.tagrow { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+.tag { font-size:11px; border:1px solid var(--line); color:var(--mut); border-radius:6px; padding:2px 8px; }
+.code { background:var(--bg1); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; overflow-x:auto; }
+.filters { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.chip { border:1px solid var(--line); background:var(--bg1); color:var(--mut); border-radius:20px; padding:5px 14px; font-size:12.5px; cursor:pointer; }
+.chip.on { color:#fff; border-color:var(--acc); background:rgba(88,166,255,.15); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:var(--mut); border-bottom:1px solid var(--line); padding:7px 6px; font-weight:500; }
+td { border-bottom:1px solid #21262d; padding:7px 6px; }
+.toast { position:fixed; bottom:20px; right:20px; background:var(--bg3); border:1px solid var(--line); border-left:4px solid var(--acc); border-radius:10px; padding:12px 18px; font-size:13.5px; display:none; max-width:420px; z-index:50; }
+.toast.err { border-left-color:var(--crit); }
+.toast.ok { border-left-color:var(--ok); }
+.spin { display:inline-block; width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--acc); border-radius:50%; animation:sp 1s linear infinite; vertical-align:-2px; }
+@keyframes sp { to { transform:rotate(360deg); } }
+.muted { color:var(--mut); }
+.empty { text-align:center; color:var(--mut); padding:30px 10px; font-size:14px; }
+.warnbox { background:rgba(210,153,34,.08); border:1px solid rgba(210,153,34,.4); border-radius:10px; padding:10px 14px; font-size:12.5px; color:var(--warn); margin-top:12px; }
 """
 
-_PAGE_TMPL = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>CASA Dashboard</title>
-<style>{css}</style></head>
-<body><div class="wrap">
-<h1>CASA Dashboard</h1>
-<div class="muted">CASA v{version} &middot; {now} &middot; read-only operational view</div>
+_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CASA Console</title>
+<style>__CSS__</style>
+</head>
+<body>
+<header class="hero"><div class="inner">
+  <div class="logo">🛡️</div>
+  <div>
+    <h1>CASA Security Console</h1>
+    <div class="sub">Core Agentic Security Assessment &middot; authorized targets only</div>
+  </div>
+  <span style="flex:1"></span>
+  <span class="badge-v">v__VERSION__</span>
+  <a class="badge-v" href="/docs">API Docs</a>
+</div></header>
 
-<div class="cards">
-  <div class="card"><div class="num">{n_assessments}</div><div class="muted">Assessments</div></div>
-  <div class="card"><div class="num">{n_jobs}</div><div class="muted">Jobs</div></div>
-  <div class="card"><div class="num">{n_findings}</div><div class="muted">Findings (latest)</div></div>
-  <div class="card"><div class="num {score_class}">{score}</div><div class="muted">Latest security score</div></div>
+<div class="wrap">
+<div class="grid">
+
+  <!-- ============ left: target form ============ -->
+  <div>
+    <div class="card">
+      <h2>🎯 New Assessment</h2>
+      <form id="target-form">
+        <label>Target (IP / domain / URL) *</label>
+        <input id="f-target" placeholder="example.com  |  192.0.2.10  |  https://host" required autocomplete="off">
+        <div class="hint">Scheme optional (https assumed). Only targets you are <b>authorized</b> to test.</div>
+
+        <label>Authorized by *</label>
+        <input id="f-by" placeholder="e.g. Security Team — ACME" required value="Dashboard User">
+
+        <label>Authorization reference</label>
+        <input id="f-ref" placeholder="ticket / contract / email (optional)">
+
+        <label>Assessment profile</label>
+        <select id="f-profile">
+          <option value="QUICK">QUICK — fast passive snapshot</option>
+          <option value="STANDARD" selected>STANDARD — full web assessment</option>
+          <option value="DEEP">DEEP — + API & safe-active checks</option>
+        </select>
+
+        <label>Scope paths (comma-separated)</label>
+        <input id="f-paths" placeholder="/" value="/">
+
+        <div class="warnbox">⚠️ Only run assessments against systems you own or are contractually authorized to test. Every request is logged and scope-validated.</div>
+        <button class="primary" id="btn-run" type="submit">▶ Run Assessment</button>
+      </form>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h2>🕘 Recent Assessments</h2>
+      <div id="history" class="muted" style="font-size:13px">Loading…</div>
+    </div>
+  </div>
+
+  <!-- ============ right: results ============ -->
+  <div>
+    <div id="progress" class="card" style="display:none">
+      <h2>⚙️ Assessment Progress</h2>
+      <div id="steps" class="steps"></div>
+      <div id="prog-msg" class="muted" style="font-size:13px"></div>
+    </div>
+
+    <div id="results" style="display:none">
+      <div class="kpi-row" id="kpis"></div>
+      <div class="card" style="margin-bottom:18px">
+        <h2>🚨 Findings <span id="f-count" class="muted" style="font-weight:400"></span></h2>
+        <div class="filters" id="filters"></div>
+        <div id="findings"></div>
+      </div>
+    </div>
+
+    <div id="welcome" class="card empty">
+      <div style="font-size:40px">🛡️</div>
+      <p>Enter an authorized target on the left and press <b>Run Assessment</b>.<br>
+      Results appear here live — including full vulnerability explanations,<br>
+      CVSS scores, attack scenarios and step-by-step remediation.</p>
+    </div>
+  </div>
+
 </div>
-
-<h2>Latest assessments</h2>
-<table>
-<tr><th>Target</th><th>Status</th><th>Score</th><th>Findings</th><th>Finished</th></tr>
-{assessment_rows}
-</table>
-
-<h2>Recent jobs</h2>
-<table>
-<tr><th>Job</th><th>Target</th><th>Profile</th><th>Status</th><th>Queued</th><th>Error</th></tr>
-{job_rows}
-</table>
-
-<div class="muted" style="margin-top:24px">
-  API docs at <a href="/docs">/docs</a> &middot; All assessments run under explicit authorization only.
 </div>
-</div></body></html>"""
+<div class="toast" id="toast"></div>
 
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const API = '/api/v1';
 
-def _fmt_dt(dt: datetime | None) -> str:
-    if not dt:
-        return "—"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+let CURRENT = { targetId: null, jobId: null, assessmentId: null, pollTimer: null };
+let FINDINGS = [], SEV_FILTER = 'ALL';
+const STEPS = ['QUEUED','RUNNING','ANALYZING','VERIFYING','COMPLETED'];
 
+function toast(msg, cls='ok') {
+  const t = $('toast'); t.textContent = msg; t.className = 'toast ' + cls; t.style.display = 'block';
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 6000);
+}
+async function api(path, opts) {
+  const r = await fetch(API + path, { headers: {'Content-Type':'application/json'}, ...(opts||{}) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(body.detail || body.message || r.statusText), {status:r.status, body});
+  return body;
+}
+function normalizeTarget(v) {
+  v = v.trim();
+  if (!/^https?:\\/\\//i.test(v)) v = 'https://' + v;
+  const u = new URL(v);
+  return u.origin;
+}
 
-async def _latest_findings_count(session: AsyncSession, target_id: str) -> int:
-    latest = await repo.get_latest_assessment_for_target(session, target_id)
-    if not latest:
-        return 0
-    rows = await repo.list_findings(session, latest.id)
-    return len(rows)
+// ---------------- run form ----------------
+$('target-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('btn-run');
+  let origin;
+  try { origin = normalizeTarget($('f-target').value); }
+  catch { return toast('Invalid target URL', 'err'); }
+
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Registering…';
+  try {
+    const reg = await api('/authorizations', { method:'POST', body: JSON.stringify({
+      target: origin,
+      authorized_by: $('f-by').value.trim(),
+      authorization_reference: $('f-ref').value.trim(),
+      allowed_domains: [new URL(origin).hostname],
+      allowed_paths: $('f-paths').value.split(',').map(s=>s.trim()).filter(Boolean),
+    })});
+    const job = await api('/jobs', { method:'POST', body: JSON.stringify({
+      target_id: reg.target_id, trigger: 'INITIAL', profile: $('f-profile').value,
+    })});
+    CURRENT = { targetId: reg.target_id, jobId: job.id, assessmentId: null };
+    showProgress(); pollJob();
+    toast('Assessment started on ' + origin);
+  } catch (err) {
+    toast('Failed: ' + err.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '▶ Run Assessment';
+    loadHistory();
+  }
+});
+
+// ---------------- progress ----------------
+function showProgress() {
+  $('welcome').style.display = 'none'; $('results').style.display = 'none';
+  $('progress').style.display = 'block'; renderSteps('QUEUED', 0);
+}
+function renderSteps(status, attempts) {
+  const idx = STEPS.indexOf(status);
+  $('steps').innerHTML = STEPS.map((s,i) =>
+    `<div class="step ${i<idx?'done':i===idx?'on':''}"><span class="dot"></span>${s}</div>`).join('')
+    + (status==='FAILED'||status==='BLOCKED' ? `<div class="step on" style="border-color:var(--crit)"><span class="dot" style="background:var(--crit)"></span>${status}</div>` : '');
+  $('prog-msg').textContent = status==='COMPLETED' ? 'Done — loading findings…'
+    : `Live status: ${status}` + (attempts?` (attempt ${attempts})`:'') + ' — polling every 2.5s';
+}
+async function pollJob() {
+  clearTimeout(CURRENT.pollTimer);
+  try {
+    const job = await api('/jobs/' + CURRENT.jobId);
+    renderSteps(job.status, job.attempts);
+    if (['COMPLETED','FAILED','BLOCKED'].includes(job.status)) {
+      if (job.status === 'COMPLETED') return loadAssessment();
+      $('prog-msg').textContent = 'Assessment ' + job.status + (job.error ? ': ' + job.error : '');
+      return;
+    }
+  } catch (e) { $('prog-msg').textContent = 'Poll error: ' + e.message; }
+  CURRENT.pollTimer = setTimeout(pollJob, 2500);
+}
+
+// ---------------- results ----------------
+async function loadAssessment() {
+  try {
+    const list = await api('/assessments?target_id=' + CURRENT.targetId);
+    if (!list.length) { $('prog-msg').textContent = 'No assessment found.'; return; }
+    CURRENT.assessmentId = list[0].id;
+    const [a, f] = await Promise.all([
+      api('/assessments/' + CURRENT.assessmentId),
+      api('/assessments/' + CURRENT.assessmentId + '/findings'),
+    ]);
+    FINDINGS = f; SEV_FILTER = 'ALL';
+    $('progress').style.display = 'none';
+    $('results').style.display = 'block';
+    renderKpis(a); renderFilters(); renderFindings(); loadHistory();
+  } catch (e) { toast('Load failed: ' + e.message, 'err'); }
+}
+function renderKpis(a) {
+  const d = (a.risk_summary||{}).distribution || {};
+  const score = a.security_score ?? 0;
+  const color = score >= 80 ? '#3fb950' : score >= 55 ? '#d29922' : '#f85149';
+  const total = Object.values(d).reduce((x,y)=>x+y,0);
+  $('kpis').innerHTML = `
+    <div class="kpi score-ring">
+      <div class="ring" style="--p:${score};--sc:${color}"><div class="val" style="color:${color}">${score}</div></div>
+      <div><div class="lbl">Security Score / 100</div>
+      <div class="num" style="font-size:18px;color:${color}">Grade ${(a.risk_summary||{}).grade||'?'}</div>
+      <div class="lbl">avg CVSS ${(a.risk_summary||{}).avg_cvss_base_score ?? '—'}</div></div>
+    </div>
+    <div class="kpi"><div class="num">${total}</div><div class="lbl">Total findings</div></div>
+    ${['CRITICAL','HIGH','MEDIUM','LOW'].map(s=>`
+      <div class="kpi"><div class="num ${s}">${d[s]||0}</div><div class="lbl">${s}</div></div>`).join('')}`;
+}
+function renderFilters() {
+  const sevs = ['ALL','CRITICAL','HIGH','MEDIUM','LOW','INFO'];
+  $('filters').innerHTML = sevs.map(s =>
+    `<div class="chip ${s===SEV_FILTER?'on':''}" onclick="setFilter('${s}')">${s==='ALL'?'All':s}
+     ${s!=='ALL'?`(${FINDINGS.filter(f=>f.severity===s).length})`:''}</div>`).join('');
+}
+window.setFilter = s => { SEV_FILTER = s; renderFilters(); renderFindings(); };
+function renderFindings() {
+  const list = FINDINGS.filter(f => SEV_FILTER==='ALL' || f.severity===SEV_FILTER)
+    .sort((a,b)=>({CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3,INFO:4}[a.severity]-{CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3,INFO:4}[b.severity]));
+  $('f-count').textContent = `(${list.length} shown)`;
+  if (!list.length) { $('findings').innerHTML = '<div class="empty">No findings in this view 🎉</div>'; return; }
+  $('findings').innerHTML = list.map((f,i) => findingCard(f,i)).join('');
+  document.querySelectorAll('.finding .head').forEach(h =>
+    h.addEventListener('click', () => h.parentElement.classList.toggle('open')));
+}
+function findingCard(f, i) {
+  const x = (f.risk_factors && (f.metadata||{}).explanation) || (f.metadata||{}).explanation || {};
+  const mitre = (f.metadata||{}).mitre_attack || [];
+  const cvss = f.risk_factors ? null : null;
+  const attk = mitre.map(m => `<span class="tag" title="${esc(m.name)}">ATT&CK ${esc(m.id)}</span>`).join('');
+  return `
+  <div class="finding" data-sev="${esc(f.severity)}">
+    <div class="head">
+      <span class="sev ${esc(f.severity)}">${esc(f.severity)}</span>
+      <div class="title">
+        ${esc(f.title)}
+        <div class="meta">${esc(f.category)} · source: ${esc(f.source)} · risk ${f.risk_score ?? '—'}
+          ${mitre.length?` · <span class="tag">ATT&CK ${esc(mitre[0].id)}</span>`:''}</div>
+      </div>
+      <span class="muted" style="font-size:11px">ID ${String(i+1).padStart(2,'0')}</span>
+    </div>
+    <div class="body">
+      ${x.vulnerability ? `<div class="sect"><h4>🧩 What is this vulnerability?</h4><p>${esc(x.vulnerability)}</p></div>` : `<div class="sect"><h4>🧩 Description</h4><p>${esc(f.description)}</p></div>`}
+      ${x.attack_scenario?.length ? `<div class="sect"><h4>⚔️ How an attacker would exploit it</h4><ol>${x.attack_scenario.map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>` : ''}
+      ${x.business_impact ? `<div class="sect"><h4>💥 Business impact</h4><p>${esc(x.business_impact)}</p></div>` : `<div class="sect"><h4>💥 Impact</h4><p>${esc(f.impact)}</p></div>`}
+      ${x.exploitability ? `<div class="sect"><h4>🎚️ Exploitability</h4><p>${esc(x.exploitability)}</p></div>` : ''}
+      ${x.cvss_rationale ? `<div class="sect"><h4>📊 Why this severity</h4><p>${esc(x.cvss_rationale)}</p></div>` : ''}
+      ${x.remediation_plan?.length ? `<div class="sect"><h4>🛠️ Remediation plan (in order)</h4><ol>${x.remediation_plan.map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>`
+        : `<div class="sect"><h4>🛠️ Remediation</h4><p>${esc(f.remediation)}</p></div>`}
+      ${x.verification ? `<div class="sect"><h4>✅ How to verify the fix</h4><p>${esc(x.verification)}</p></div>` : ''}
+      <div class="sect"><h4>🔎 Evidence</h4><div class="code">${esc(JSON.stringify(f.evidence_refs || f.risk_factors || {}, null, 2).slice(0,1200))}</div>
+        <div class="tagrow">
+          <span class="tag">asset: ${esc(f.affected_asset)}</span>
+          <span class="tag">confidence: ${esc(f.confidence)}</span>
+          <span class="tag">status: ${esc(f.status)}</span>
+          <span class="tag">fingerprint: ${esc(f.fingerprint)}</span>
+          ${attk}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ---------------- history ----------------
+async function loadHistory() {
+  try {
+    const jobs = await api('/jobs?limit=8');
+    const targets = {};
+    for (const j of jobs) {
+      if (!targets[j.target_id]) targets[j.target_id] = {id: j.target_id, status: j.status, profile: j.profile, at: j.queued_at, jobId: j.id};
+    }
+    const rows = Object.values(targets).slice(0, 8);
+    $('history').innerHTML = rows.length ? `<table><tr><th>Target ID</th><th>Profile</th><th>Status</th><th></th></tr>` +
+      rows.map(t => `<tr><td class="code" style="font-size:11px">${esc(t.id.slice(0,8))}…</td>
+        <td>${esc(t.profile)}</td><td>${esc(t.status)}</td>
+        <td><a href="#" onclick="viewTarget('${t.id}','${t.jobId}');return false;">view</a></td></tr>`).join('') + '</table>'
+      : '<span class="muted">No assessments yet.</span>';
+  } catch { $('history').textContent = 'History unavailable.'; }
+}
+window.viewTarget = async (targetId, jobId) => {
+  CURRENT = { targetId, jobId, assessmentId: null };
+  showProgress(); pollJob();
+};
+loadHistory();
+</script>
+</body>
+</html>"""
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    assessments = await repo.list_assessments(session, limit=10)
-    jobs = await repo.list_jobs(session, limit=10)
-
-    severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
-    total_findings = 0
-    score = None
-    score_class = ""
-    if assessments:
-        latest = assessments[0]
-        score = latest.security_score
-        score_class = "LOW" if (score or 0) > 70 else "MEDIUM" if (score or 0) > 40 else "CRITICAL"
-        for f in await repo.list_findings(session, latest.id):
-            total_findings += 1
-            sev = (f.severity or "INFO").upper()
-            if sev in severity_counts:
-                severity_counts[sev] += 1
-
-    # Build rows with explicit loops: awaiting inside a generator expression
-    # would produce an async generator, which str.join cannot consume.
-    assessment_row_parts: list[str] = []
-    for a in assessments:
-        n_find = await _latest_findings_count(session, a.target_id)
-        assessment_row_parts.append(
-            f"<tr><td>{html.escape(a.target_url)}</td>"
-            f"<td><span class='badge {a.status}'>{a.status}</span></td>"
-            f"<td>{a.security_score if a.security_score is not None else '—'}</td>"
-            f"<td>{n_find}</td>"
-            f"<td>{_fmt_dt(a.finished_at)}</td></tr>"
-        )
-    assessment_rows = "".join(assessment_row_parts) or (
-        "<tr><td colspan=5 class=muted>No assessments yet — run one via /docs or the launcher.</td></tr>"
-    )
-
-    job_row_parts: list[str] = []
-    for j in jobs:
-        job_row_parts.append(
-            f"<tr><td>{j.id[:8]}…</td>"
-            f"<td>{html.escape(getattr(j, 'target_url', '') or '')}</td>"
-            f"<td>{j.profile}</td>"
-            f"<td><span class='badge {j.status}'>{j.status}</span></td>"
-            f"<td>{_fmt_dt(j.queued_at)}</td>"
-            f"<td>{html.escape((j.error or '')[:80])}</td></tr>"
-        )
-    job_rows = "".join(job_row_parts) or "<tr><td colspan=6 class=muted>No jobs yet.</td></tr>"
-
-    body = _PAGE_TMPL.format(
-        css=_CSS,
-        version=__version__,
-        now=_fmt_dt(datetime.now(timezone.utc)),
-        n_assessments=len(assessments),
-        n_jobs=len(jobs),
-        n_findings=total_findings,
-        score=score if score is not None else "—",
-        score_class=score_class,
-        assessment_rows=assessment_rows,
-        job_rows=job_rows,
-    )
-    return HTMLResponse(body)
+async def dashboard() -> HTMLResponse:
+    html = _PAGE.replace("__CSS__", _CSS).replace("__VERSION__", __version__)
+    return HTMLResponse(html)

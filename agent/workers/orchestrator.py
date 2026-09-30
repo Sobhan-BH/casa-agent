@@ -245,8 +245,23 @@ class Orchestrator:
             await self._persist_evidence(ctx)
             await self._run_risk_and_ai(ctx)
 
-            # Persist normalized + risk-scored + AI-annotated findings BEFORE
-            # verification/reports so downstream stages and the DB agree.
+            # Post-normalization enrichment (BEFORE persistence so the DB,
+            # API and reports all carry the same enriched metadata):
+            #  - MITRE ATT&CK technique annotations
+            #  - full what/why/how explanations per finding
+            from agent.analysis.attack_mapping import AttackMappingModule
+
+            attack_mapper = AttackMappingModule(validator)
+            await attack_mapper.run(ctx)
+
+            from agent.analysis.explanation import ExplanationModule
+
+            explainer = ExplanationModule(validator)
+            await explainer.run(ctx)
+
+            # Persist normalized + risk-scored + AI-annotated + enriched
+            # findings BEFORE verification/reports so downstream stages and
+            # the DB agree.
             await repo.save_findings(self._session, str(ctx.assessment_id), ctx.findings)
 
             verification = await self._run_verification(ctx)
@@ -255,12 +270,6 @@ class Orchestrator:
 
             from agent.analysis.attack_surface import build_attack_surface
             from agent.reports.generator import ReportGenerator
-
-            # Post-normalization enrichment: MITRE ATT&CK annotations.
-            from agent.analysis.attack_mapping import AttackMappingModule
-
-            attack_mapper = AttackMappingModule(validator)
-            await attack_mapper.run(ctx)
 
             generator = ReportGenerator(self._session)
             await generator.generate(ctx)

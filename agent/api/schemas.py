@@ -91,6 +91,7 @@ class FindingOut(BaseModel):
     ai_notes: dict | None
     evidence_refs: list
     fingerprint: str
+    metadata: dict | None = None
 
 
 class EvidenceOut(BaseModel):
