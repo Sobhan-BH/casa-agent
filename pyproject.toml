@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casa-agent"
+version = "0.1.0"
+description = "CASA — Core Agentic Security Assessment: an authorized-scope-only AI cybersecurity assessment agent (MVP)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "CASA Project" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "SQLAlchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "python-multipart>=0.0.9",
+    "cryptography>=42.0",
+    "Jinja2>=3.1",
+    "tenacity>=8.2",
+    "dnspython>=2.6",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+redis = ["redis>=5.0"]
+all = ["psycopg[binary]>=3.1", "redis>=5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

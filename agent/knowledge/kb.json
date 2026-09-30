@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "name": "casa-local-kb",
+    "version": "0.1.0",
+    "note": "Curated, version-scoped entries used for Known Vulnerability Correlation. Extend or swap for a CVE/NVD feed later (extension point)."
+  },
+  "entries": [
+    {
+      "id": "KB-WERKZEUG-DEV",
+      "product": "Werkzeug dev server",
+      "match": "exact_name",
+      "severity": "HIGH",
+      "confidence": "HIGH",
+      "title": "Development WSGI server exposed (Werkzeug)",
+      "description": "The Werkzeug development server appears to be serving the target. It is not hardened for production and has a public debugger risk.",
+      "impact": "Remote code execution via the interactive debugger if enabled; no production-grade hardening.",
+      "remediation": "Serve the app behind a production WSGI server (gunicorn/uwsgi) and never enable the debugger publicly.",
+      "references": ["https://werkzeug.palletsprojects.com/en/stable/deployment/"]
+    },
+    {
+      "id": "KB-GENERIC-OLD-TLS",
+      "product": "server",
+      "match": "server_version_lt",
+      "version_constraints": {
+        "nginx": [["1.17.0", "nginx < 1.17 known vulnerabilities range (example)"]],
+        "apache": [["2.4.28", "Apache < 2.4.28 known vulnerabilities range (example)"]]
+      },
+      "severity": "MEDIUM",
+      "confidence": "LOW",
+      "title": "Outdated server version detected",
+      "description": "The detected server version falls in a range associated with known advisories.",
+      "impact": "Depends on the specific advisory; typically DoS or info disclosure.",
+      "remediation": "Update to the latest stable server release and keep an upgrade cadence.",
+      "references": ["https://nginx.org/en/security_advisories.html", "https://httpd.apache.org/security/vulnerabilities_24.html"]
+    }
+  ]
+}
