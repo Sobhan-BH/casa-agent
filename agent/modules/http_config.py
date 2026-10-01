@@ -33,11 +33,17 @@ class HttpConfigModule(AssessmentModule):
 
         # 1) Plain-HTTP behavior
         if is_https:
-            parsed = urlparse(ctx.target_url)
             plain_url = urlparse(ctx.target_url)._replace(scheme="http").geturl()
             entry = await self._safe_get(client, plain_url)
             ctx.raw_results["http_plain_probe"] = entry
-            if entry.get("status_code") == 200:
+            # SafeHttpClient follows in-scope redirects and reports the FINAL
+            # status. A 200 here is only a finding when the chain shows the
+            # content was served over HTTP itself (no https hop happened).
+            redirect_hops: list[str] = entry.get("redirects") or []
+            redirected_to_https = any(
+                h.startswith("https://") for h in redirect_hops
+            )
+            if entry.get("status_code") == 200 and not redirected_to_https:
                 root_body = (ctx.raw_results.get("http_root", {}) or {}).get("body") or ""
                 same_body = (entry.get("body") or "") == root_body
                 f = make_finding(
@@ -53,6 +59,7 @@ class HttpConfigModule(AssessmentModule):
                     evidence=[{
                         "type": "http_get", "url": plain_url,
                         "status": entry.get("status_code"),
+                        "redirects": redirect_hops,
                         "served_full_page": same_body,
                     }],
                     affected_asset=plain_url,
@@ -63,6 +70,8 @@ class HttpConfigModule(AssessmentModule):
                 )
                 f["fingerprint"] = make_fingerprint("http_no_redirect", ctx.base_domain)
                 ctx.findings.append(f)
+            elif redirected_to_https:
+                ctx.raw_results["http_plain_probe"]["classification"] = "http_redirects_to_https_ok"
         else:
             ctx.raw_results["http_plain_probe"] = {
                 "status_code": None, "note": "target itself is plain HTTP"

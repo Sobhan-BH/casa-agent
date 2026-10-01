@@ -53,6 +53,7 @@ class JobOut(BaseModel):
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    target_url: str | None = None
 
 
 class AssessmentOut(BaseModel):

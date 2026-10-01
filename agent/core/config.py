@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     job_total_timeout_seconds: float = 900.0
     job_module_retries: int = 1
     http_max_concurrency: int = 4
-    http_timeout_seconds: float = 10.0
+    http_timeout_seconds: float = 10.0  # per-request; real-internet targets benefit from 25-30s
     http_max_bytes: int = 2_000_000
     user_agent: str = "CASA-Agent/0.1 (+authorized-security-assessment)"
 

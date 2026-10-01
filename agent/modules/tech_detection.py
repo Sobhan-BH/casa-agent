@@ -47,6 +47,8 @@ HEADER_SIGNATURES: list[tuple[str, str, str, str]] = [
     ("JSESSIONID (Java)", "language/runtime", "set-cookie", r"JSESSIONID"),
     ("ASP.NET Session", "language/runtime", "set-cookie", r"ASP\.NET_SessionId"),
     ("PHP Session", "language/runtime", "set-cookie", r"PHPSESSID"),
+    ("WordPress", "cms", "link", r"https://api\.w\.org/"),
+    ("WordPress", "cms", "x-pingback", r".+"),
 ]
 
 BODY_SIGNATURES: list[tuple[str, str, str]] = [
@@ -54,7 +56,7 @@ BODY_SIGNATURES: list[tuple[str, str, str]] = [
     ("Bootstrap", "css-framework", r"bootstrap[.\-]?([\d.]+)?\.(?:min\.)?(?:css|js)"),
     ("React", "js-framework", r"/react(?:-dom)?[.@-]([\d.]+)?"),
     ("Vue.js", "js-framework", r"/vue(?:\.runtime)?[.@-]?([\d.]+)?"),
-    ("WordPress", "cms", r"wp-content"),
+    ("WordPress", "cms", r"wp-content|wp-includes|wp-json"),
     ("Drupal", "cms", r"/sites/default/files"),
     ("Joomla", "cms", r"/media/jui/"),
     ("Google Analytics", "analytics", r"google-analytics\.com|googletagmanager\.com"),

@@ -170,9 +170,35 @@ class FindingNormalizerModule(AssessmentModule):
                 assets = existing["metadata"].setdefault("affected_assets", [])
                 if candidate.get("affected_asset") and candidate["affected_asset"] not in assets:
                     assets.append(candidate["affected_asset"])
+                # Severity escalation: keep the highest severity across
+                # duplicates so a HIGH detector is not hidden by an INFO one.
+                if Severity[candidate["severity"]].rank > Severity[existing["severity"]].rank:
+                    existing["severity"] = candidate["severity"]
                 continue
             seen[key] = candidate
             normalized.append(candidate)
+
+        # Cross-module header dedupe: different header modules emit findings
+        # with different fingerprint keys but identical titles; merge them by
+        # title so the report shows one finding per real issue.
+        by_title: dict[str, dict[str, Any]] = {}
+        title_deduped: list[dict[str, Any]] = []
+        for f in normalized:
+            tkey = f.get("title", "").strip().lower()
+            if tkey in by_title:
+                prim = by_title[tkey]
+                prim.setdefault("metadata", {}).setdefault("also_reported_by", [])
+                if f.get("source") and f["source"] not in prim["metadata"]["also_reported_by"]:
+                    prim["metadata"]["also_reported_by"].append(f["source"])
+                assets = prim["metadata"].setdefault("affected_assets", [])
+                if f.get("affected_asset") and f["affected_asset"] not in assets:
+                    assets.append(f["affected_asset"])
+                if Severity[f["severity"]].rank > Severity[prim["severity"]].rank:
+                    prim["severity"] = f["severity"]
+                continue
+            by_title[tkey] = f
+            title_deduped.append(f)
+        normalized = title_deduped
 
         groups = self._attach_root_cause_groups(normalized)
         ctx.raw_results["root_cause_groups"] = groups

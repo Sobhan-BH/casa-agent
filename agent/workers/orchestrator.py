@@ -53,6 +53,7 @@ from agent.modules.osv_enrichment import OsvEnrichmentModule
 from agent.modules.vuln_correlation import VulnCorrelationModule
 from agent.modules.waf_detect import WafDetectModule
 from agent.modules.web_checks import WebChecksModule
+from agent.modules.wordpress import WordPressModule
 from agent.risk.engine import RiskEngine
 from agent.storage import repositories as repo
 
@@ -77,6 +78,7 @@ MODULE_REGISTRY: dict[str, tuple] = {
     "dns_security": lambda v, s: DnsSecurityModule(v),
     "vuln_correlation": lambda v, s: VulnCorrelationModule(v),
     "waf_detect": lambda v, s: WafDetectModule(v),
+    "wordpress": lambda v, s: WordPressModule(v),
     "osv_enrichment": lambda v, s: OsvEnrichmentModule(v),
     "tool_runner": lambda v, s: ToolRunnerModule(v),
 }
@@ -110,6 +112,7 @@ PROFILES: dict[str, list[str]] = {
         "web_checks",
         "dns_security",
         "waf_detect",
+        "wordpress",       # CMS-specific checks (auto-skips when not WP)
         "vuln_correlation",
         "osv_enrichment",  # CVE advisories via OSV.dev (degrades offline)
         "tool_runner",   # STANDARD tool map: whatweb/nikto/nuclei (+nmap in DEEP)
@@ -130,6 +133,7 @@ PROFILES: dict[str, list[str]] = {
         "active_safe",
         "dns_security",
         "waf_detect",
+        "wordpress",
         "vuln_correlation",
         "osv_enrichment",
         "tool_runner",   # DEEP tool map: + nmap + gobuster + ffuf (surface enrichment)

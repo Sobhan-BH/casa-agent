@@ -17,7 +17,7 @@ from agent.storage.database import get_session
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 
-def _job_out(job) -> JobOut:
+def _job_out(job, target_url: str | None = None) -> JobOut:
     return JobOut(
         id=job.id,
         target_id=job.target_id,
@@ -29,6 +29,7 @@ def _job_out(job) -> JobOut:
         queued_at=job.queued_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
+        target_url=target_url,
     )
 
 
@@ -48,6 +49,7 @@ async def create_job(
         authz, _validator = await manager.resolve_for_target_url(target.url)
     except CasaError as exc:
         raise HTTPException(status_code=403, detail=f"authorization gate: {exc.message}") from exc
+    # remember the URL so the response (and the dashboard history) can show it
 
     if payload.trigger not in (t.value for t in JobTrigger):
         raise HTTPException(status_code=400, detail="invalid trigger")
@@ -73,7 +75,7 @@ async def create_job(
     queue = get_app_state().get("queue")
     if queue is not None:
         queue.enqueue(UUID(job.id))
-    return _job_out(job)
+    return _job_out(job, target_url=target.url)
 
 
 @router.get("", response_model=list[JobOut])

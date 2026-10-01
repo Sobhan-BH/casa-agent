@@ -13,73 +13,9 @@ from agent.core.finding import make_finding, make_fingerprint
 from agent.core.interfaces import AssessmentModule
 
 _HEADER_CHECKS: list[dict[str, Any]] = [
-    {
-        "title": "Strict-Transport-Security (HSTS) header missing",
-        "header": "strict-transport-security",
-        "severity": "MEDIUM",
-        "confidence": "HIGH",
-        "category": "CONFIGURATION",
-        "description": (
-            "The response does not include Strict-Transport-Security. Browsers may "
-            "allow downgrade to plain HTTP, enabling interception."
-        ),
-        "impact": "Protocol downgrade and cookie theft over unencrypted channels.",
-        "remediation": "Send HSTS with a long max-age, e.g. max-age=31536000; includeSubDomains.",
-        "references": ["https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Strict_Transport_Security_Cheat_Sheet.html"],
-        "only_if_https": True,
-    },
-    {
-        "title": "Content-Security-Policy header missing",
-        "header": "content-security-policy",
-        "severity": "MEDIUM",
-        "confidence": "HIGH",
-        "description": (
-            "No Content-Security-Policy is sent. CSP limits the impact of XSS by "
-            "restricting script sources."
-        ),
-        "impact": "Increased XSS exploitation success and blast radius.",
-        "remediation": "Define a CSP starting with default-src 'self' and tighten per app.",
-        "references": ["https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html"],
-        "only_if_https": False,
-    },
-    {
-        "title": "X-Content-Type-Options header missing",
-        "header": "x-content-type-options",
-        "severity": "LOW",
-        "confidence": "HIGH",
-        "description": "nosniff is not set; browsers may MIME-sniff user content.",
-        "impact": "Possible drive-by execution of uploaded content.",
-        "remediation": "Add X-Content-Type-Options: nosniff.",
-        "references": ["https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options"],
-        "only_if_https": False,
-    },
-    {
-        "title": "Referrer-Policy header missing",
-        "header": "referrer-policy",
-        "severity": "LOW",
-        "confidence": "HIGH",
-        "description": "No Referrer-Policy: URLs (with paths/tokens) may leak via Referer.",
-        "impact": "Sensitive path or token leakage to third parties.",
-        "remediation": "Send Referrer-Policy: no-referrer or strict-origin-when-cross-origin.",
-        "references": ["https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy"],
-        "only_if_https": False,
-    },
-    {
-        "title": "X-Frame-Options / frame-ancestors missing (clickjacking)",
-        "header": "x-frame-options",
-        "severity": "LOW",
-        "confidence": "MEDIUM",
-        "description": (
-            "Neither X-Frame-Options nor CSP frame-ancestors restricts framing, so the "
-            "site can be embedded and clickjacked."
-        ),
-        "impact": "Clickjacking / UI redress attacks against authenticated users.",
-        "remediation": "Send X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
-        "references": ["https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html"],
-        "only_if_https": False,
-        "alt_headers": ["content-security-policy"],
-        "alt_pattern": r"frame-ancestors",
-    },
+    # NOTE: HSTS / CSP / XCTO / Referrer-Policy / frame-options live in the
+    # deeper HeadersModule (which also validates directive QUALITY). Duplicating
+    # them here produced identical-title double findings on every target.
 ]
 
 

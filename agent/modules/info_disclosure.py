@@ -96,6 +96,15 @@ class InfoDisclosureModule(AssessmentModule):
         base = ctx.target_url.rstrip("/")
         results: dict[str, Any] = {}
 
+        # Soft-404 baseline: probe a path that certainly does not exist and
+        # remember what "not found" looks like on THIS site (status, length,
+        # title). WordPress and many CMSs answer 200 with homepage/marketing
+        # content for arbitrary paths — the baseline is the reliable filter.
+        baseline = await self._probe(client, base + "/casa-nonexistent-" + ctx.assessment_id.hex[:8])
+        baseline_len = len((baseline.get("body") or ""))
+        baseline_status = baseline.get("status_code")
+        results["__baseline__"] = {k: v for k, v in baseline.items() if k != "body"}
+
         for path, kind, severity in self.SENSITIVE_PATHS:
             url = base + path
             entry = await self._probe(client, url)
@@ -109,6 +118,20 @@ class InfoDisclosureModule(AssessmentModule):
             # return 200 + a soft-404 HTML page for everything.
             if self._looks_like_soft_404(body, entry):
                 entry["classification"] = "soft_404_ignored"
+                continue
+            # Baseline similarity: same status AND near-identical body length
+            # as the nonexistent-path response => this is the site's standard
+            # "anything" page, not a real file. Only applies to HTML bodies
+            # (CMS soft-404 pages); real config/backup files are plain text or
+            # binary and must never be dropped by this rule.
+            looks_html = "html" in (ctype or "").lower() or "<html" in body.lower()
+            if (
+                looks_html
+                and entry.get("status_code") == baseline_status == 200
+                and baseline_len > 0
+                and abs(len(body) - baseline_len) <= max(64, baseline_len // 10)
+            ):
+                entry["classification"] = "baseline_similarity_ignored"
                 continue
 
             if kind == "env_file" and not re.search(
