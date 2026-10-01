@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     # Continuous monitoring (0 disables the scheduler)
     reassess_interval_hours: float = 0.0
 
+    # CASA-Brain (local-first decision layer; disabled preserves stock pipeline)
+    brain_enabled: bool = False
+    brain_trajectory_enabled: bool = True
+    brain_max_actions: int = 40
+    brain_max_module_repeats: int = 2
+
+    # Exploit intelligence (offline CSV; searchsploit adapter when installed)
+    exploitdb_enabled: bool = True
+    exploitdb_csv_path: str = ""          # optional files_exploits.csv override
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

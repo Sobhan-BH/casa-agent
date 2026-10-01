@@ -10,6 +10,36 @@ JSON + HTML + **SARIF 2.1.0** reports. A local, deliberately vulnerable lab app
 is included so the entire flow runs with **no internet access and no third-party
 targets**.
 
+## What's new in v0.4.0
+
+| Feature | Description |
+|---|---|
+| **CASA-Brain** | Native, local-first decision engine (no external LLM required): explicit assessment state, structured action space, deterministic strategy with information-gain-oriented next-action selection, and STOP decisions when further steps add no value |
+| **Policy/Safety Gate for Brain** | The Brain only *proposes* actions; a deterministic gate (rules R0–R7: shape, scope, authorization, repetition, step limits) independently validates every proposal — Brain cannot expand scope, bypass policy, or execute anything arbitrary |
+| **Trajectory recording** | Every Brain pass records state → selected action → policy result → execution result → outcome as JSONL (`data/brain-trajectories.jsonl`) — the future training corpus for a CASA-specific model, with curation hooks (`load_curated`) |
+| **Optional local-model interface** | `CASA_BRAIN_MODEL` selects a strategy: `deterministic` (default, fully offline) or a local model strategy that re-ranks candidates but can never invent actions outside CASA's controlled action space |
+| **ExploitDB correlation** | Version→exploit *correlation/annotation only* (no active exploitation): when a versioned technology is detected, CASA queries a local ExploitDB CSV index (`CASA_EXPLOITDB_CSV_PATH`, or auto-detected at `/usr/share/exploitdb`, `/opt/exploitdb`, `data/files_exploits.csv`) and attaches EDB references to findings |
+| **Brain orchestration** | Enabled with `CASA_BRAIN_ENABLED=1`; after the standard pipeline, the Brain pass proposes up to a bounded number of follow-up actions (evidence requests, verification, correlation, enrichment) — all executed through the same module registry, timeout and audit paths |
+| **Accuracy fixes** (v0.3.x, verified on a live authorized target) | TXT-record quote stripping (SPF false-negative fixed), DNS resolver fallbacks, soft-404 baseline (kills bogus ".env open" style claims), finding merge/escalation in the normalizer, redirect-aware HTTP probe |
+
+### Brain at a glance
+
+```
+Authorization → Scope → Assessment State → CASA-Brain (strategy) → Proposed Action
+     → Deterministic Policy/Safety Gate → Approved Module → Evidence
+     → Updated Assessment State → CASA-Brain → … → STOP_ASSESSMENT
+```
+
+Explainability: every decision carries reason codes, expected evidence, expected
+information gain and confidence — generated from structured state, not free-form text.
+
+> ⚠️ **This is a defensive assessment tool.** It only issues GET/HEAD requests,
+> refuses targets without authorization, and contains no exploit, auth-bypass,
+> credential, persistence, or malware functionality. Assess only systems you own
+> or are contractually authorized to test.
+
+---
+
 ## What's new in v0.2.0
 
 | Feature | Description |
@@ -23,13 +53,6 @@ targets**.
 | **Web dashboard** | Read-only operational view at `/dashboard` (no JS frameworks, no CDN) |
 | **Webhook notifications** | Slack/Discord/generic payloads on completion: `CASA_WEBHOOK_URL` |
 | **Continuous monitoring** | Built-in scheduler re-assesses stale targets: `CASA_REASSESS_INTERVAL_HOURS` |
-
-> ⚠️ **This is a defensive assessment tool.** It only issues GET/HEAD requests,
-> refuses targets without authorization, and contains no exploit, auth-bypass,
-> credential, persistence, or malware functionality. Assess only systems you own
-> or are contractually authorized to test.
-
----
 
 ## 1. Architecture
 

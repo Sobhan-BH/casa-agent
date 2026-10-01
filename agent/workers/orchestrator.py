@@ -42,6 +42,7 @@ from agent.modules.cookies import CookieSecurityModule
 from agent.modules.cors_analyzer import CorsAnalyzerModule
 from agent.modules.discovery import DiscoveryModule
 from agent.modules.dns_security import DnsSecurityModule
+from agent.modules.exploit_enrichment import ExploitEnrichmentModule
 from agent.modules.headers import HeadersModule
 from agent.modules.http_config import HttpConfigModule
 from agent.modules.info_disclosure import InfoDisclosureModule
@@ -80,6 +81,7 @@ MODULE_REGISTRY: dict[str, tuple] = {
     "waf_detect": lambda v, s: WafDetectModule(v),
     "wordpress": lambda v, s: WordPressModule(v),
     "osv_enrichment": lambda v, s: OsvEnrichmentModule(v),
+    "exploit_enrichment": lambda v, s: ExploitEnrichmentModule(v),
     "tool_runner": lambda v, s: ToolRunnerModule(v),
 }
 _TAIL_FACTORIES: list = [
@@ -115,6 +117,7 @@ PROFILES: dict[str, list[str]] = {
         "wordpress",       # CMS-specific checks (auto-skips when not WP)
         "vuln_correlation",
         "osv_enrichment",  # CVE advisories via OSV.dev (degrades offline)
+        "exploit_enrichment",  # ExploitDB correlation for versioned techs
         "tool_runner",   # STANDARD tool map: whatweb/nikto/nuclei (+nmap in DEEP)
     ],
     AssessmentMode.DEEP.value: [
@@ -136,6 +139,7 @@ PROFILES: dict[str, list[str]] = {
         "wordpress",
         "vuln_correlation",
         "osv_enrichment",
+        "exploit_enrichment",
         "tool_runner",   # DEEP tool map: + nmap + gobuster + ffuf (surface enrichment)
     ],
 }
@@ -244,6 +248,16 @@ class Orchestrator:
 
         try:
             await self._run_pipeline(ctx, validator)
+
+            # CASA-Brain adaptive pass: when enabled, the Brain observes the
+            # post-pipeline state and may request bounded extra work (a missed
+            # profile module, more evidence, exploit enrichment, or STOP).
+            # Every proposal passes the deterministic Policy Gate; nothing the
+            # Brain does can touch authorization, scope or risk math.
+            from agent.brain.loop import build_default_loop, brain_enabled
+
+            if brain_enabled():
+                await self._run_brain_pass(ctx, validator)
 
             await repo.update_job_status(self._session, job.id, JobStatus.ANALYZING.value)
             await self._persist_evidence(ctx)
@@ -504,6 +518,90 @@ class Orchestrator:
                     "duration_ms": phase.duration_ms,
                 },
             )
+
+    async def _run_brain_pass(self, ctx: AssessmentContext, validator: ScopeValidator) -> None:
+        """Give the Brain a bounded number of extra module passes.
+
+        Hard caps (defense in depth — the Brain + Gate + engine limits):
+        - at most 4 Brain-approved actions per assessment here
+        - only modules already legal for the profile (gate re-checks)
+        - every executed module re-enters the same per-step timeout/retry
+        """
+        from agent.brain.actions import ActionType
+        from agent.brain.loop import build_default_loop
+        from agent.brain.state import BrainState
+
+        loop = build_default_loop()
+        max_brain_actions = 4
+        executed = 0
+
+        for _ in range(max_brain_actions + 1):
+            state = BrainState.from_context(ctx, validator)
+            action, decision = loop.next_action(state)
+            if action is None:
+                break
+            if action.action_type in (ActionType.STOP_ASSESSMENT, ActionType.REASSESS):
+                ctx.raw_results["brain"] = {
+                    "report": loop.report.to_dict(),
+                    "final": action.to_dict(),
+                }
+                break
+            module_name = action.params.get("module")
+            enricher = action.params.get("enricher")
+            try:
+                if action.action_type == ActionType.ENRICH_TECHNOLOGY:
+                    if enricher == "exploitdb":
+                        from agent.modules.exploit_enrichment import ExploitEnrichmentModule
+
+                        await asyncio.wait_for(
+                            ExploitEnrichmentModule(validator).run(ctx),
+                            timeout=settings.job_step_timeout_seconds,
+                        )
+                    else:  # osv
+                        from agent.modules.osv_enrichment import OsvEnrichmentModule
+
+                        await asyncio.wait_for(
+                            OsvEnrichmentModule(validator).run(ctx),
+                            timeout=settings.job_step_timeout_seconds,
+                        )
+                elif module_name:
+                    # Re-instantiate the module through the same registry the
+                    # pipeline uses; run it directly (pipeline already ran the
+                    # module once where applicable).
+                    from agent.workers.orchestrator import MODULE_REGISTRY
+
+                    factory = MODULE_REGISTRY.get(module_name)
+                    if factory is None:
+                        break
+                    module = factory(validator, ctx.scope)
+                    await asyncio.wait_for(
+                        module.run(ctx), timeout=settings.job_step_timeout_seconds
+                    )
+                executed += 1
+                loop.record_execution(
+                    state.state_hash, action,
+                    {"ok": True, "module": module_name or enricher}, None,
+                )
+            except Exception as exc:  # noqa: BLE001 — Brain actions are best-effort
+                logger.warning("brain action failed (%s): %s", action.type_name, exc)
+                loop.record_execution(
+                    state.state_hash, action,
+                    {"ok": False, "error": str(exc)[:200]}, None,
+                )
+                break
+
+        ctx.raw_results["brain"] = {
+            "report": loop.report.to_dict(),
+            "executed_actions": executed,
+        }
+        audit_logger.emit(
+            "BRAIN_PASS",
+            job_id=str(ctx.job_id),
+            target=ctx.target_url,
+            details={"actions": executed,
+                     "approved": loop.report.approved_count,
+                     "denied": loop.report.denied_count},
+        )
 
     async def _run_risk_and_ai(self, ctx: AssessmentContext) -> None:
         engine = RiskEngine()
