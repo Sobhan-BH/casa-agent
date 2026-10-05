@@ -10,6 +10,16 @@ JSON + HTML + **SARIF 2.1.0** reports. A local, deliberately vulnerable lab app
 is included so the entire flow runs with **no internet access and no third-party
 targets**.
 
+## What's new in v0.5.0
+
+| Feature | Description |
+|---|---|
+| **Full ExploitDB index + version-matching engine** | One-command fetcher (`python scripts/fetch_exploitdb.py`) downloads the complete ~47,000-entry ExploitDB index with a mirror fallback chain; rewritten matching engine (subject-adjacency, version bands `1.3.9 < 1.4.0`, operator bounds `<= 2.4.49`, ranges `3.0 - 4.1.1`, dotted-prefix, official `codes` CVE extraction) so an Apache 2.4.50 detection maps to EDB-50406/CVE-2021-42013 — not to unrelated plugin rows sharing the platform name |
+| **Brain exploit-first priority** | When versioned technologies are detected and no exploit correlation exists yet, the Brain suppresses diminishing-returns STOPs and proposes the offline ExploitDB enrichment first (highest information gain); OSV is only proposed afterwards if still useful — the deterministic strategy now knows "what to do now" |
+| **Brain decisions in the console** | The Brain pass report is persisted into the assessment `risk_summary` and rendered as a 🧠 decisions card in the web console (per-decision action, gain, policy verdict; approved/denied/executed counters) |
+| **HTTP-only targets** | The console auto-detects the scheme: bare hosts are probed over https first and transparently fall back to http before registering the authorization, so http-only sites assess end-to-end (the whole pipeline already branches on the target scheme) |
+| **Level-2 dataset pipeline** | `python scripts/build_brain_dataset.py` curates recorded Brain trajectories (policy-approved AND executed-OK only, duplicates and execution-link records dropped/joined) into a chat-format fine-tuning JSONL (`data/brain-dataset-level2.jsonl`) |
+
 ## What's new in v0.4.0
 
 | Feature | Description |
@@ -417,6 +427,30 @@ Non-INFO findings without evidence are automatically flagged
 All settings are env vars with the `CASA_` prefix (see `.env.example`):
 database URL (SQLite default, Postgres in compose), LLM provider, timeouts,
 HTTP limits, audit log path, lab URL.
+
+### ExploitDB offline index (one command)
+
+```bash
+python scripts/fetch_exploitdb.py   # downloads files_exploits.csv (~10 MB) to data/
+```
+
+Downloads the complete official ExploitDB index (mirror fallback chain,
+integrity-checked ≥10,000 rows, atomic write) so exploit correlation works
+fully offline. The index is signature-cached and hot-reloads when refreshed.
+
+### CASA-Brain dataset (Level-2)
+
+```bash
+python scripts/build_brain_dataset.py              # default paths
+python scripts/build_brain_dataset.py --stats-only # curation statistics
+python scripts/build_brain_dataset.py --min-gain 0.5
+```
+
+Curates recorded Brain trajectories (`data/brain-trajectories.jsonl`) into a
+chat-format fine-tuning JSONL (`data/brain-dataset-level2.jsonl`): only
+policy-approved AND executed-OK transitions, duplicates dropped, execution
+outcomes joined from their link records. Each line is `{schema, messages:
+[system, user, assistant], meta}`.
 
 ---
 

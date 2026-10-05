@@ -144,10 +144,15 @@ class TestPolicyGate:
     def test_denies_enrich_when_network_disabled(self):
         gate = PolicyGate(PolicyConfig(allow_enrich_network_calls=False))
         st = self._state()
-        a = BrainAction(ActionType.ENRICH_TECHNOLOGY,
-                        params={"enricher": "exploitdb", "technology": "nginx"})
-        d = gate.evaluate(a, st)
+        # OSV needs the network -> denied
+        osv = BrainAction(ActionType.ENRICH_TECHNOLOGY,
+                          params={"enricher": "osv", "technology": "nginx"})
+        d = gate.evaluate(osv, st)
         assert not d.allowed and d.rule_id == "R5_ENRICH_NET"
+        # ExploitDB reads the LOCAL CSV index -> still allowed offline
+        edb = BrainAction(ActionType.ENRICH_TECHNOLOGY,
+                          params={"enricher": "exploitdb", "technology": "nginx"})
+        assert gate.evaluate(edb, st).allowed
 
     def test_step_limit_only_allows_stop(self):
         gate = PolicyGate()
@@ -179,7 +184,57 @@ class TestEngine:
     def test_cms_detected_proposes_wordpress_checks(self):
         st = self._state_with(raw={"technologies": [{"name": "WordPress", "version": "6.4"}]})
         d = DeterministicStrategy().propose(st)
-        assert d.action.params.get("module") == "wordpress"
+        # v0.5.0: exploit-first — version correlation outranks the WP module,
+        # but the targeted CMS checks must still be among the candidates.
+        assert d.action.action_type == ActionType.ENRICH_TECHNOLOGY
+        assert d.action.params.get("enricher") == "exploitdb"
+        mods = [c.params.get("module") for c in d.candidates if c.action_type == ActionType.RUN_MODULE]
+        assert "wordpress" in mods
+
+    def test_exploit_first_outranks_stop_when_modules_exhausted(self):
+        # All profile modules executed, versioned tech present, no exploit
+        # correlation yet => the Brain must keep working, not stop.
+        st = self._state_with(
+            raw={"technologies": [{"name": "Apache HTTP Server", "version": "2.4.50"}]},
+            findings=[_finding(title="Apache HTTP Server version disclosed (2.4.50)")],
+        )
+        st.executed_modules = list(st.allowed_modules)
+        st.step = 10
+        st.compute_derived()
+        d = DeterministicStrategy().propose(st)
+        assert d.action.action_type == ActionType.ENRICH_TECHNOLOGY
+        assert d.action.params.get("enricher") == "exploitdb"
+        assert d.action.expected_information_gain == 0.95
+
+    def test_stop_returns_after_exploit_correlation_recorded(self):
+        st = self._state_with(
+            raw={
+                "technologies": [{"name": "nginx", "version": "1.24"}],
+                "exploit_enrichment": {"indexed": True, "results": [{}]},
+                "osv": {"advisories": []},
+            },
+        )
+        st.executed_modules = list(st.allowed_modules)
+        st.step = 10
+        st.compute_derived()
+        d = DeterministicStrategy().propose(st)
+        assert d.action.action_type == ActionType.STOP_ASSESSMENT
+
+    def test_osv_proposed_once_after_exploit_correlation(self):
+        # exploit correlation done, OSV not yet => the Brain still has one
+        # meaningful step left before stopping.
+        st = self._state_with(
+            raw={
+                "technologies": [{"name": "nginx", "version": "1.24"}],
+                "exploit_enrichment": {"indexed": True, "results": [{}]},
+            },
+        )
+        st.executed_modules = list(st.allowed_modules)
+        st.step = 10
+        st.compute_derived()
+        d = DeterministicStrategy().propose(st)
+        assert d.action.action_type == ActionType.ENRICH_TECHNOLOGY
+        assert d.action.params.get("enricher") == "osv"
 
     def test_versioned_tech_proposes_exploit_enrichment(self):
         st = self._state_with(
@@ -307,6 +362,58 @@ class TestExploitIntel:
         idx = ExploitDBIndex.load(self._write_csv(tmp_path))
         assert idx.search("gunicorn", "23.0") == []
 
+    def test_full_index_semantics(self, tmp_path):
+        """Subject-adjacency: plugin bounds must not bind to the platform."""
+        from agent.analysis.exploit_intel import ExploitDBIndex
+
+        csv = tmp_path / "files_exploits.csv"
+        csv.write_text(
+            "id,file,description,date_published,author,type,platform,codes\n"
+            '1,exploits/php/1.py,"NEX-Forms WordPress plugin < 7.9.7 - SQLi",2024-01-01,a,webapps,php,CVE-2024-1000\n'
+            '2,exploits/php/2.py,"WordPress Core < 6.4.3 - SQL Injection",2024-01-02,b,webapps,php,CVE-2024-1001\n'
+            '3,exploits/php/3.py,"WordPress Plugin Buddypress 6.2.0 - XSS",2024-01-03,c,webapps,php,\n'
+            '4,exploits/php/4.txt,"Nginx 1.3.9 < 1.4.0 - DoS",2023-01-04,d,dos,linux,\n'
+            '5,exploits/php/5.sh,"Apache HTTP Server 2.4.50 - RCE",2021-10-25,e,webapps,multiple,CVE-2021-42013\n'
+        )
+        idx = ExploitDBIndex.load(csv)
+
+        # WP 6.2: the core row "< 6.4.3" covers it via operator semantics and
+        # outranks the plugin row sharing the literal version
+        wp = idx.search("WordPress", "6.2.0", limit=2)
+        assert wp[0].edb_id == "2"   # core operator bound, w3
+        assert wp[1].edb_id == "3"   # plugin literal, w1
+
+        # operator bound belongs to WP Core, not to NEX-Forms plugin
+        wp2 = idx.search("WordPress", "6.4.1", limit=2)
+        assert wp2[0].edb_id == "2" and wp2[0].matched_version == "<6.4.3"
+        assert wp2[0].cves == ["CVE-2024-1001"]
+
+        # nginx band "1.3.9 < 1.4.0" must NOT contain 1.24.0 — only the
+        # honest technology-only row may remain
+        ng = idx.search("Nginx", "1.24.0", limit=3)
+        assert all(m.matched_on == "technology" for m in ng)
+
+        # Apache 2.4.50 RCE with official codes column
+        ap = idx.search("Apache HTTP Server", "2.4.50", limit=2)
+        assert ap and ap[0].edb_id == "5" and ap[0].cves == ["CVE-2021-42013"]
+
+    def test_get_index_signature_cache(self, tmp_path, monkeypatch):
+        from agent.analysis import exploit_intel
+
+        monkeypatch.setenv("CASA_EXPLOITDB_CSV_PATH", "")
+        csv = tmp_path / "files_exploits.csv"
+        csv.write_text(
+            "id,file,description,date_published,author,type,platform\n"
+            '11,x/11.txt,"Foo 1.0 - XSS",2024-01-01,a,webapps,linux\n'
+        )
+        monkeypatch.setattr(exploit_intel.settings_csv, "__code__", None) if False else None
+        idx1 = exploit_intel.ExploitDBIndex.load(csv)
+        assert idx1.available and idx1.search("Foo", "1.0")
+        # same in-memory index object is reused when the file is unchanged
+        i1 = exploit_intel.get_index()
+        i2 = exploit_intel.get_index()
+        assert i1 is i2
+
     def test_empty_index_is_safe(self):
         from agent.analysis.exploit_intel import ExploitDBIndex
 
@@ -336,3 +443,52 @@ class TestExploitIntel:
         refs = carrier["references"]
         assert any("exploit-db.com/exploits/12346" in r for r in refs)
         assert carrier["metadata"]["exploit_matches"]
+
+
+# ------------------------------------------------- orchestrator integration
+class TestBrainRiskSummaryInjection:
+    """The Brain pass report must reach the persisted risk_summary (API/DB)."""
+
+    @pytest.mark.asyncio
+    async def test_brain_report_lands_in_risk_summary(
+        self, db_session, wired_http, monkeypatch
+    ):
+        monkeypatch.setenv("CASA_BRAIN_ENABLED", "1")
+        # Keep the gate fully offline (no OSV network) and don't pollute the
+        # local trajectory file from the test run.
+        from agent.brain.policy_gate import PolicyConfig
+        from agent.core.config import settings as app_settings
+
+        monkeypatch.setattr(PolicyConfig, "allow_enrich_network_calls", False)
+        monkeypatch.setattr(app_settings, "brain_trajectory_enabled", False)
+
+        from uuid import UUID
+
+        from agent.connectors.authorization_manager import AuthorizationManager
+        from agent.storage import repositories as repo
+        from agent.workers.orchestrator import Orchestrator
+
+        manager = AuthorizationManager(db_session)
+        reg = await manager.register_authorization(
+            {
+                "target": "http://127.0.0.1:8001",
+                "authorized_by": "Lab Owner (unit test)",
+                "authorization_reference": "TEST-BRAIN-RS",
+                "allowed_domains": ["127.0.0.1"],
+                "allowed_paths": ["/"],
+            }
+        )
+        job = await repo.create_job(
+            db_session,
+            target_id=reg["target_id"],
+            authorization_id=reg["authorization"]["id"],
+            trigger="INITIAL",
+        )
+        result = await Orchestrator(db_session).run_job(UUID(str(job.id)))
+        assert result["status"] == "COMPLETED", result.get("error")
+
+        assessment = await repo.get_assessment(db_session, result["assessment_id"])
+        brain = (assessment.risk_summary or {}).get("brain")
+        assert brain and brain.get("report"), "brain report missing from risk_summary"
+        assert brain["report"]["decisions"], "brain must record at least one decision"
+        assert brain["report"]["final_reason"] != ""

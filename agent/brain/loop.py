@@ -99,6 +99,9 @@ class BrainLoop:
                     self.report.approved_count += 1
                     return alt, decision
             self._record(state, decision, action, policy, None, None)
+            self.report.final_reason = (
+                f"no approved action remains ({policy.rule_id}: {policy.reason})"
+            )
             return None, decision
 
         self.report.approved_count += 1

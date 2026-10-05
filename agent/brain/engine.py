@@ -56,18 +56,33 @@ class DeterministicStrategy:
     def _candidates(self, state: BrainState) -> list[BrainAction]:
         out: list[BrainAction] = []
 
+        # Exploit-first: while a versioned technology has not been correlated
+        # against the public-exploit index, the assessment is NOT done — this
+        # is the highest-value lookup CASA can still perform.
+        exploit_pending = (
+            not self._exploit_correlated(state)
+            and bool(self._versioned_techs(state))
+            and self._exploit_lookup_available()
+        )
+
         # 1) STOP dominates when the assessment is mature or exhausted.
         if state.max_steps and state.step >= state.max_steps:
             out.append(self._stop(state, ["max_steps_reached"]))
             return out
         if not state.pending_modules:
-            out.append(self._stop(state, ["all_profile_modules_executed"]))
+            if exploit_pending:
+                # STOP withheld: version→exploit correlation is still pending;
+                # the highest-value action (below) outranks ending the pass.
+                pass
+            else:
+                out.append(self._stop(state, ["all_profile_modules_executed"]))
         # Diminishing returns: full profile ran and the last snapshot added
         # nothing high-value that verification could still sharpen.
         if (
             not state.pending_modules
             and state.unverified_high_value == 0
             and state.step >= 4
+            and not exploit_pending
         ):
             out.append(self._stop(state, ["diminishing_returns", "evidence_sufficient"]))
 
@@ -141,38 +156,63 @@ class DeterministicStrategy:
                 )
             )
 
-        # 6) Technology with a version -> exploit enrichment has high value.
-        versioned = [
-            t for t in state.technologies
-            if t.get("version") and str(t.get("version")).strip() not in ("", "None")
-        ]
+        # 6) Exploit-first: a versioned technology outranks everything else
+        #    (0.95) while uncorrelated — knowing which public exploits map to
+        #    the disclosed versions is the single most decision-relevant fact.
+        versioned = self._versioned_techs(state)
         if versioned:
-            out.append(
-                BrainAction(
-                    ActionType.ENRICH_TECHNOLOGY,
-                    params={"enricher": "exploitdb", "technology": versioned[0]["name"],
-                            "version": versioned[0]["version"]},
-                    reason_codes=["versioned_technology_present", "exploit_correlation"],
-                    expected_information_gain=0.8,
-                    confidence=0.75,
-                    related_findings=[
-                        f["fingerprint"] for f in state.findings
-                        if versioned[0]["name"].lower() in f["title"].lower()
-                    ],
-                    expected_evidence="matched public exploits for disclosed versions",
+            tech0 = versioned[0]
+            if not self._exploit_correlated(state):
+                if self._exploit_lookup_available():
+                    out.append(
+                        BrainAction(
+                            ActionType.ENRICH_TECHNOLOGY,
+                            params={"enricher": "exploitdb", "technology": tech0["name"],
+                                    "version": tech0["version"]},
+                            reason_codes=[
+                                "exploit_first_correlation",
+                                "versioned_technology_present",
+                                "public_exploit_index_available",
+                            ],
+                            expected_information_gain=0.95,
+                            confidence=0.9,
+                            related_findings=[
+                                f["fingerprint"] for f in state.findings
+                                if tech0["name"].lower() in f["title"].lower()
+                            ],
+                            expected_evidence=(
+                                "version-matched public exploits + CVE codes for "
+                                f"{tech0['name']} {tech0['version']}"
+                            ),
+                        )
+                    )
+                else:
+                    out.append(
+                        BrainAction(
+                            ActionType.ENRICH_TECHNOLOGY,
+                            params={"enricher": "exploitdb", "technology": tech0["name"],
+                                    "version": tech0["version"]},
+                            reason_codes=[
+                                "versioned_technology_present",
+                                "exploit_index_unavailable",
+                            ],
+                            expected_information_gain=0.5,
+                            confidence=0.6,
+                            expected_evidence="correlation attempted (no local index)",
+                        )
+                    )
+            if "osv" not in state.evidence_counts:
+                out.append(
+                    BrainAction(
+                        ActionType.ENRICH_TECHNOLOGY,
+                        params={"enricher": "osv", "technology": tech0["name"],
+                                "version": tech0["version"]},
+                        reason_codes=["versioned_technology_present", "advisory_correlation"],
+                        expected_information_gain=0.65,
+                        confidence=0.7,
+                        expected_evidence="OSV advisories for disclosed versions",
+                    )
                 )
-            )
-            out.append(
-                BrainAction(
-                    ActionType.ENRICH_TECHNOLOGY,
-                    params={"enricher": "osv", "technology": versioned[0]["name"],
-                            "version": versioned[0]["version"]},
-                    reason_codes=["versioned_technology_present", "advisory_correlation"],
-                    expected_information_gain=0.65,
-                    confidence=0.7,
-                    expected_evidence="OSV advisories for disclosed versions",
-                )
-            )
 
         # 7) Endpoints unmapped and discovery still available.
         if not state.attack_surface.get("endpoints") and "discovery" in state.pending_modules:
@@ -215,6 +255,34 @@ class DeterministicStrategy:
             expected_information_gain=0.0,
             confidence=1.0,
         )
+
+    # ------------------------------------------------------------- helpers
+    @staticmethod
+    def _versioned_techs(state: BrainState) -> list[dict[str, Any]]:
+        """Detected technologies with a usable version string."""
+        return [
+            t for t in state.technologies
+            if t.get("version") and str(t.get("version")).strip() not in ("", "None")
+        ]
+
+    @staticmethod
+    def _exploit_correlated(state: BrainState) -> bool:
+        """True once exploit enrichment has run this assessment.
+
+        Key-presence, not truthiness: an empty result set still counts as
+        "correlated" — the lookup happened and honestly found nothing.
+        """
+        return "exploit_enrichment" in state.evidence_counts
+
+    @staticmethod
+    def _exploit_lookup_available() -> bool:
+        """A local ExploitDB index or searchsploit binary is usable."""
+        try:
+            from agent.analysis.exploit_intel import get_index, searchsploit_available
+
+            return get_index().available or searchsploit_available()
+        except Exception:  # noqa: BLE001 — availability probe must never throw
+            return False
 
 
 class LocalModelStrategy(DeterministicStrategy):

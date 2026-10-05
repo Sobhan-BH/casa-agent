@@ -137,8 +137,8 @@ _PAGE = """<!DOCTYPE html>
       <h2>🎯 New Assessment</h2>
       <form id="target-form">
         <label>Target (IP / domain / URL) *</label>
-        <input id="f-target" placeholder="example.com  |  192.0.2.10  |  https://host" required autocomplete="off">
-        <div class="hint">Scheme optional (https assumed). Only targets you are <b>authorized</b> to test.</div>
+        <input id="f-target" placeholder="example.com  |  192.0.2.10  |  http://host  |  https://host" required autocomplete="off">
+        <div class="hint">Scheme optional — <b>http://</b> and <b>https://</b> both supported; bare hosts try https first and fall back to http automatically. Only targets you are <b>authorized</b> to test.</div>
 
         <label>Authorized by *</label>
         <input id="f-by" placeholder="e.g. Security Team — ACME" required value="Dashboard User">
@@ -177,6 +177,10 @@ _PAGE = """<!DOCTYPE html>
 
     <div id="results" style="display:none">
       <div class="kpi-row" id="kpis"></div>
+      <div class="card" id="brain-panel" style="display:none;margin-bottom:18px">
+        <h2>🧠 CASA-Brain decisions <span id="brain-stats" class="muted" style="font-weight:400"></span></h2>
+        <div id="brain-body"></div>
+      </div>
       <div class="card" style="margin-bottom:18px">
         <h2>🚨 Findings <span id="f-count" class="muted" style="font-weight:400"></span></h2>
         <div class="filters" id="filters"></div>
@@ -222,16 +226,47 @@ function normalizeTarget(v) {
   const u = new URL(v);
   return u.origin;
 }
+async function pickScheme(host) {
+  // Scheme auto-detection for http-only sites: a no-cors fetch resolves
+  // (opaque) when the TCP/TLS handshake succeeds and rejects on connection
+  // or TLS failure — exactly the signal needed, with no CORS involvement.
+  for (const scheme of ['https', 'http']) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 3500);
+    try {
+      await fetch(scheme + '://' + host, { mode: 'no-cors', signal: ctl.signal });
+      return scheme;
+    } catch { /* unreachable over this scheme — try the next */ }
+    finally { clearTimeout(timer); }
+  }
+  return null; // host unreachable either way — let the assessment report it
+}
 
 // ---------------- run form ----------------
 $('target-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = $('btn-run');
+  const raw = $('f-target').value.trim();
   let origin;
-  try { origin = normalizeTarget($('f-target').value); }
+  try { origin = normalizeTarget(raw); }
   catch { return toast('Invalid target URL', 'err'); }
 
-  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Registering…';
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Probing target…';
+
+  // http-only sites: when the user didn't pin a scheme, probe https first and
+  // transparently fall back to http BEFORE registering the authorization, so
+  // the whole pipeline (probe, modules, scope) runs against the live origin.
+  let schemeNote = '';
+  if (!/^https?:\\/\\//i.test(raw)) {
+    const u = new URL(origin);
+    const scheme = await pickScheme(u.host);
+    if (scheme === 'http') {
+      origin = 'http://' + u.host;
+      schemeNote = ' — https unreachable, using http';
+    }
+  }
+
+  btn.innerHTML = '<span class="spin"></span> Registering…';
   try {
     const reg = await api('/authorizations', { method:'POST', body: JSON.stringify({
       target: origin,
@@ -245,7 +280,7 @@ $('target-form').addEventListener('submit', async (e) => {
     })});
     CURRENT = { targetId: reg.target_id, jobId: job.id, assessmentId: null };
     showProgress(); pollJob();
-    toast('Assessment started on ' + origin);
+    toast('Assessment started on ' + origin + schemeNote);
   } catch (err) {
     toast('Failed: ' + err.message, 'err');
   } finally {
@@ -294,7 +329,7 @@ async function loadAssessment() {
     FINDINGS = f; SEV_FILTER = 'ALL';
     $('progress').style.display = 'none';
     $('results').style.display = 'block';
-    renderKpis(a); renderFilters(); renderFindings(); loadHistory();
+    renderKpis(a); renderFilters(); renderFindings(); renderBrain(a); loadHistory();
   } catch (e) { toast('Load failed: ' + e.message, 'err'); }
 }
 function renderKpis(a) {
@@ -365,6 +400,40 @@ function findingCard(f, i) {
       </div>
     </div>
   </div>`;
+}
+
+function renderBrain(a) {
+  const panel = $('brain-panel');
+  const b = (a.risk_summary || {}).brain;
+  const rep = b && b.report;
+  const decisions = (rep && rep.decisions) || [];
+  if (!rep || !decisions.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  $('brain-stats').textContent =
+    `approved ${rep.approved ?? 0} · denied ${rep.denied ?? 0}` +
+    (b.executed_actions != null ? ` · executed ${b.executed_actions}` : '');
+  const rows = decisions.map((d, i) => {
+    const sel = d.selected || {};
+    const pol = d.policy || {};
+    const p = sel.params || {};
+    const tgt = p.module || p.technology || p.fingerprint;
+    const verdict = pol.allowed
+      ? '<span class="tag" style="color:var(--ok);border-color:var(--ok)">APPROVED</span>'
+      : '<span class="tag" style="color:var(--crit);border-color:var(--crit)">DENIED</span>';
+    return `<tr>
+      <td>${i + 1}</td>
+      <td><b>${esc(String(sel.action || '?').replace(/_/g, ' '))}</b>
+        ${tgt ? `<div class="muted" style="font-size:11px">${esc(tgt)}${p.enricher ? ' (' + esc(p.enricher) + ')' : ''}</div>` : ''}</td>
+      <td>${sel.expected_information_gain ?? '—'}</td>
+      <td>${verdict} <span class="tag">${esc(pol.rule || '')}</span>
+        <div class="muted" style="font-size:11px">${esc(String(pol.reason || '').slice(0, 120))}</div></td>
+    </tr>`;
+  }).join('');
+  const stop = b.final
+    ? `<div class="sect" style="margin-top:12px"><h4>🛑 Final decision</h4><p>${esc(String((b.final.reason_codes || []).join(', ') || b.final.action || ''))}</p></div>`
+    : '';
+  $('brain-body').innerHTML =
+    `<table><tr><th>#</th><th>Action</th><th>Gain</th><th>Policy verdict</th></tr>${rows}</table>${stop}`;
 }
 
 // ---------------- history ----------------

@@ -541,6 +541,9 @@ class Orchestrator:
             if action is None:
                 break
             if action.action_type in (ActionType.STOP_ASSESSMENT, ActionType.REASSESS):
+                loop.report.final_reason = (
+                    "; ".join(action.reason_codes) or action.type_name
+                )
                 ctx.raw_results["brain"] = {
                     "report": loop.report.to_dict(),
                     "final": action.to_dict(),
@@ -606,6 +609,13 @@ class Orchestrator:
     async def _run_risk_and_ai(self, ctx: AssessmentContext) -> None:
         engine = RiskEngine()
         ctx.risk_summary = engine.compute(ctx.findings)
+
+        # Carry the CASA-Brain pass report into risk_summary so the persisted
+        # assessment, the REST API and the dashboard all expose what the Brain
+        # decided — without a dedicated DB column.
+        brain_report = ctx.raw_results.get("brain")
+        if brain_report and isinstance(ctx.risk_summary, dict):
+            ctx.risk_summary = {**ctx.risk_summary, "brain": brain_report}
 
         if settings.ai_analysis_enabled:
             started = time.monotonic()

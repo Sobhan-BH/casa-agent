@@ -88,9 +88,14 @@ class PolicyGate:
                     False, f"fingerprint {fp!r} not in current state", "R4_VERIFY_TARGET"
                 )
 
-        # R5: network-touching enrichment must be explicitly enabled
+        # R5: only NETWORK-based enrichment is gated. The ExploitDB enricher
+        # correlates against the LOCAL CSV index (zero network) so it stays
+        # available even in fully offline deployments; OSV.dev needs the flag.
         if action.action_type == ActionType.ENRICH_TECHNOLOGY:
-            if not self.config.allow_enrich_network_calls:
+            if (
+                action.params.get("enricher") == "osv"
+                and not self.config.allow_enrich_network_calls
+            ):
                 return PolicyDecision(
                     False, "network enrichment disabled by policy", "R5_ENRICH_NET"
                 )
