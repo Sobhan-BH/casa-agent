@@ -364,11 +364,27 @@ function renderFindings() {
   document.querySelectorAll('.finding .head').forEach(h =>
     h.addEventListener('click', () => h.parentElement.classList.toggle('open')));
 }
+function threatBadge(md) {
+  const t = (md||{}).threat_tier;
+  if (!t) return '';
+  if (t === 'P1_KEV') return '<span class="tag" style="color:var(--crit);border-color:var(--crit);font-weight:700" title="CVE is exploited in the wild (CISA KEV)">🔥 KEV · exploited in the wild</span>';
+  if (t === 'P2_EPSS_CRITICAL') return '<span class="tag" style="color:var(--hi);border-color:var(--hi);font-weight:700" title="EPSS ≥ 0.9 — very high exploitation probability">⚡ EPSS critical</span>';
+  if (t === 'P3_EPSS_ELEVATED') return '<span class="tag" style="color:var(--warn);border-color:var(--warn)" title="EPSS ≥ 0.5 — elevated exploitation probability">⚠ EPSS elevated</span>';
+  return '';
+}
 function findingCard(f, i) {
   const x = (f.risk_factors && (f.metadata||{}).explanation) || (f.metadata||{}).explanation || {};
   const mitre = (f.metadata||{}).mitre_attack || [];
-  const cvss = f.risk_factors ? null : null;
+  const tbadge = threatBadge(f.metadata);
+  const cveThreat = (f.metadata||{}).cve_threat;
   const attk = mitre.map(m => `<span class="tag" title="${esc(m.name)}">ATT&CK ${esc(m.id)}</span>`).join('');
+  const cveRow = (f.metadata||{}).exploit_cves?.length ? `
+    <div class="sect"><h4>🎯 CVE threat intelligence (ExploitDB + CISA KEV + EPSS)</h4>
+      ${tbadge}
+      ${cveThreat ? `<p style="font-size:12.5px;color:#c9d1d9;margin:6px 0">${esc(cveThreat.tier_label)}${cveThreat.epss_max != null ? ` · max EPSS ${esc(cveThreat.epss_max)}` : ''}${cveThreat.known_ransomware ? ' · used in ransomware campaigns' : ''}</p>` : ''}
+      <div class="tagrow">${(f.metadata.exploit_cves||[]).map(c => `<span class="tag" style="font-family:ui-monospace,Consolas,monospace">${esc(c)}</span>`).join('')}</div>
+      ${(f.metadata||{}).exploit_matches?.length ? `<div class="code" style="margin-top:8px">${esc((f.metadata.exploit_matches||[]).slice(0,5).map(m => `EDB-${m.edb_id} [${m.matched_on}${m.matched_version?' '+m.matched_version:''}] ${m.description||''}`).join('; ').slice(0,900))}</div>` : ''}
+    </div>` : '';
   return `
   <div class="finding" data-sev="${esc(f.severity)}">
     <div class="head">
@@ -376,11 +392,12 @@ function findingCard(f, i) {
       <div class="title">
         ${esc(f.title)}
         <div class="meta">${esc(f.category)} · source: ${esc(f.source)} · risk ${f.risk_score ?? '—'}
-          ${mitre.length?` · <span class="tag">ATT&CK ${esc(mitre[0].id)}</span>`:''}</div>
+          ${mitre.length?` · <span class="tag">ATT&CK ${esc(mitre[0].id)}</span>`:''} ${tbadge}</div>
       </div>
       <span class="muted" style="font-size:11px">ID ${String(i+1).padStart(2,'0')}</span>
     </div>
     <div class="body">
+      ${cveRow}
       ${x.vulnerability ? `<div class="sect"><h4>🧩 What is this vulnerability?</h4><p>${esc(x.vulnerability)}</p></div>` : `<div class="sect"><h4>🧩 Description</h4><p>${esc(f.description)}</p></div>`}
       ${x.attack_scenario?.length ? `<div class="sect"><h4>⚔️ How an attacker would exploit it</h4><ol>${x.attack_scenario.map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>` : ''}
       ${x.business_impact ? `<div class="sect"><h4>💥 Business impact</h4><p>${esc(x.business_impact)}</p></div>` : `<div class="sect"><h4>💥 Impact</h4><p>${esc(f.impact)}</p></div>`}

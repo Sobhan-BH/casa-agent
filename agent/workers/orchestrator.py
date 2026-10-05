@@ -39,6 +39,7 @@ from agent.modules.active_safe import ActiveSafeModule
 from agent.modules.api_security import ApiSecurityModule
 from agent.modules.config_analysis import ConfigAnalysisModule
 from agent.modules.cookies import CookieSecurityModule
+from agent.analysis.evidence_collector import EvidenceCollectorModule
 from agent.modules.cors_analyzer import CorsAnalyzerModule
 from agent.modules.discovery import DiscoveryModule
 from agent.modules.dns_security import DnsSecurityModule
@@ -83,11 +84,16 @@ MODULE_REGISTRY: dict[str, tuple] = {
     "osv_enrichment": lambda v, s: OsvEnrichmentModule(v),
     "exploit_enrichment": lambda v, s: ExploitEnrichmentModule(v),
     "tool_runner": lambda v, s: ToolRunnerModule(v),
+    "evidence_collector": lambda v, s: EvidenceCollectorModule(v),
 }
 _TAIL_FACTORIES: list = [
     lambda v, s: EvidenceCollectorModule(v),
     lambda v, s: FindingNormalizerModule(v),
 ]
+
+# Modules the Brain may re-run as ENRICH/RUN_MODULE follow-up actions
+# (mirror of RUNNABLE_MODULES in agent/brain/actions.py minus the tail).
+BRAIN_RERUNNABLE = {"exploit_enrichment", "osv_enrichment", "evidence_collector"}
 
 # Assessment profiles (Phase 14). Each profile explicitly lists the modules
 # that execute, in order. TAIL stages (evidence/normalization) always run.
@@ -117,7 +123,7 @@ PROFILES: dict[str, list[str]] = {
         "wordpress",       # CMS-specific checks (auto-skips when not WP)
         "vuln_correlation",
         "osv_enrichment",  # CVE advisories via OSV.dev (degrades offline)
-        "exploit_enrichment",  # ExploitDB correlation for versioned techs
+        "exploit_enrichment",  # ExploitDB + CVE/KEV/EPSS threat fusion
         "tool_runner",   # STANDARD tool map: whatweb/nikto/nuclei (+nmap in DEEP)
     ],
     AssessmentMode.DEEP.value: [

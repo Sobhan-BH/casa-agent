@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "casa-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "CASA — Core Agentic Security Assessment: an authorized-scope-only AI cybersecurity assessment agent (MVP)."
 readme = "README.md"
 requires-python = ">=3.11"

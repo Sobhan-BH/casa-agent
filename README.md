@@ -10,6 +10,15 @@ JSON + HTML + **SARIF 2.1.0** reports. A local, deliberately vulnerable lab app
 is included so the entire flow runs with **no internet access and no third-party
 targets**.
 
+## What's new in v0.6.0
+
+| Feature | Description |
+|---|---|
+| **CVE threat intelligence (KEV + EPSS)** | Every CVE surfaced by ExploitDB correlation is fused with the **CISA KEV** catalog (exploited-in-the-wild, ransomware-campaign flag, federal due date) and **EPSS** scores (30-day exploitation probability) — all offline after `python scripts/fetch_cve_intel.py` |
+| **APT-style priority tiers** | Deterministic threat tiers: `P1_KEV` (exploited in the wild) → `P2_EPSS_CRITICAL` (EPSS ≥ 0.9) → `P3_EPSS_ELEVATED` (EPSS ≥ 0.5 / public ransomware use) → `P4_INFORMATIONAL`; exploit_enrichment findings are severity-uplifted by tier (KEV/critical = HIGH when version-matched) and every annotated finding carries `threat_tier` + `cve_threat` metadata |
+| **Version-less technology correlation** | The enrichment pipeline no longer skips technologies without a disclosed version: every detected tech is searched against the full 47k-row ExploitDB index, CVEs are extracted and threat-fused, and findings attach via token-aware carrier matching (`Apache HTTP Server` ↔ "Apache version disclosed") |
+| **Threat badges in the console** | Findings carry 🔥 KEV / ⚡ EPSS badges and a dedicated "CVE threat intelligence" section (tier label, max EPSS, ransomware note, CVE chips, EDB evidence) |
+
 ## What's new in v0.5.0
 
 | Feature | Description |
@@ -437,6 +446,17 @@ python scripts/fetch_exploitdb.py   # downloads files_exploits.csv (~10 MB) to d
 Downloads the complete official ExploitDB index (mirror fallback chain,
 integrity-checked ≥10,000 rows, atomic write) so exploit correlation works
 fully offline. The index is signature-cached and hot-reloads when refreshed.
+
+### CVE threat feeds (CISA KEV + EPSS)
+
+```bash
+python scripts/fetch_cve_intel.py   # downloads data/kev.json + data/epss_scores.csv
+```
+
+One command, fully offline afterwards: CASA fuses these with ExploitDB
+correlation to prioritize CVEs the way an attacker actually picks them
+(Known Exploited first, then exploitation probability), with zero runtime
+network calls.
 
 ### CASA-Brain dataset (Level-2)
 
